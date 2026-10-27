@@ -25,7 +25,7 @@ Good for gaming (bind keys to whatever your game uses, one profile per game), bu
 - [Make your own keypad](#make-your-own-keypad)
   - [1. Wire it](#1-wire-it)
   - [2. Flash the ESP32 with the Arduino IDE](#2-flash-the-esp32-with-the-arduino-ide)
-  - [3. Build the Windows app](#3-build-the-windows-app)
+  - ~~[3. Build the Windows app](#3-build-the-windows-app)~~
   - [4. Make it start with Windows (Optional)](#4-make-it-start-with-windows-optional)
 - [Using the settings page](#using-the-settings-page)
 - [Troubleshooting](#troubleshooting)
