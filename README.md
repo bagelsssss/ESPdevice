@@ -121,7 +121,7 @@ To change the pins or the order, edit `KEY_PINS` at the top of the sketch. The o
 
 The firmware only sends serial bytes: no WiFi, no Bluetooth, nothing else, which keeps the loop fast.
 
-### 3. Build the Windows app
+~~### 3. Build the Windows app~~ (deprecated)
 
 You need the C++ compiler from Visual Studio (the free **Build Tools for Visual Studio** with the *Desktop development with C++* workload is enough).
 
