@@ -4,6 +4,8 @@
 
 ![ESPdevice settings page](preview-v1.0.png)
 
+![ESPdevice settings page](preview2-v1.0.png)
+
 Turn a cheap ESP32 and a few switches into a 3-key USB keypad for Windows. A small background app listens to the ESP32 over serial and types real keystrokes, with profiles, a live key visualizer, a latency debugger and themes, all in a local web page.
 
 Good for gaming (bind keys to whatever your game uses, one profile per game), but it works for anything: macros, media keys, shortcuts.
