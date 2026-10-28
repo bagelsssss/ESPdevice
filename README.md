@@ -19,19 +19,32 @@ Good for gaming (bind keys to whatever your game uses, one profile per game), bu
 
 > **Supported hardware (so far):** classic ESP32 dev boards (e.g. ESP32 WROOM-32) that show up in Windows as a **serial / COM port** through a USB-to-serial chip (CP2102, CH340, etc.). The keypad talks plain serial. There is no Bluetooth, WiFi or native-USB-HID mode yet, so boards that don't expose a COM port are not supported.
 
+## Download
+
+Get the latest build from the [**Releases**](../../releases/latest) page. No Visual Studio needed.
+
+- `ESPdevice-Setup.exe` is the installer (per-user, no admin prompt). It can also start ESPdevice when you sign in to Windows.
+- `ESPdevice-portable.zip` is just `ESPdevice.exe`. Keep it in a folder you can write to, because it saves your `config\` folder next to itself.
+
+Windows SmartScreen may say "Windows protected your PC" because the installer isn't code-signed. Click **More info**, then **Run anyway**.
+
+You still need to build and flash the keypad itself, see [Make your own keypad](#make-your-own-keypad).
+
 ## Contents
+- [Download](#download)
 - [Features](#features)
 - [Using it as a gaming keypad](#using-it-as-a-gaming-keypad)
 - [Make your own keypad](#make-your-own-keypad)
   - [1. Wire it](#1-wire-it)
   - [2. Flash the ESP32 with the Arduino IDE](#2-flash-the-esp32-with-the-arduino-ide)
-  - ~~[3. Build the Windows app](#3-build-the-windows-app)~~
-  - [4. Make it start with Windows (Optional)](#4-make-it-start-with-windows-optional)
+  - [3. Install the Windows app](#3-install-the-windows-app)
+  - [4. Make it start with Windows (portable zip only, optional)](#4-make-it-start-with-windows-portable-zip-only-optional)
 - [Using the settings page](#using-the-settings-page)
 - [Troubleshooting](#troubleshooting)
 - [Limitations](#limitations)
 - [How it works (serial protocol)](#how-it-works-serial-protocol)
 - [Repo layout](#repo-layout)
+- [License](#license)
 
 ## Features
 
@@ -121,7 +134,17 @@ To change the pins or the order, edit `KEY_PINS` at the top of the sketch. The o
 
 The firmware only sends serial bytes: no WiFi, no Bluetooth, nothing else, which keeps the loop fast.
 
-### ~~3. Build the Windows app~~ (deprecated)
+### 3. Install the Windows app
+
+1. Download `ESPdevice-Setup.exe` from the [Releases](../../releases/latest) page and run it. It installs to `%LocalAppData%\ESPdevice`.
+2. Close any older copy first, because two copies would both type every key.
+3. Tick **Start ESPdevice when I sign in to Windows** if you want it to launch quietly at log-in (then you can skip step 4), and finish the installer.
+4. A tray icon appears. Right-click it and choose **Open Settings**, or browse to http://localhost:9191.
+
+Prefer no installer? Unzip `ESPdevice-portable.zip` somewhere permanent (for example `C:\ESPdevice\`) and run `ESPdevice.exe`.
+
+<details>
+<summary>Build it yourself instead</summary>
 
 You need the C++ compiler from Visual Studio (the free **Build Tools for Visual Studio** with the *Desktop development with C++* workload is enough).
 
@@ -133,10 +156,15 @@ rc /nologo espdevice.rc
 cl /EHsc /std:c++17 /O2 /MT /DUNICODE /D_UNICODE ESPdevice.cpp espdevice.res /link /SUBSYSTEM:WINDOWS /OUT:ESPdevice.exe
 ```
 
-3. Move `ESPdevice.exe` to a permanent folder (for example `C:\ESPdevice\`). It creates a `config\` folder next to itself for your profiles, theme and log.
-4. Close any older copy first, because two copies would both type every key. Then run `ESPdevice.exe`: a tray icon appears, and right-click > **Open Settings** (or browse to http://localhost:9191).
+3. Move `ESPdevice.exe` to a permanent folder. It creates a `config\` folder next to itself for your profiles, theme and log.
 
-### 4. Make it start with Windows (Optional)
+GitHub Actions builds the installer the same way on every push (see `.github/workflows/build.yml` and `installer/ESPdevice.iss`).
+
+</details>
+
+### 4. Make it start with Windows (portable zip only, optional)
+
+If you used the installer you can skip this: just tick the start-with-Windows box in the installer.
 
 1. In the folder with `ESPdevice.exe`, right-click it and choose **Create shortcut** (on Windows 11: **Show more options > Create shortcut**).
 2. Press **Win + R**, type `shell:startup` and press Enter. The Startup folder opens.
@@ -192,4 +220,12 @@ firmware/ESPdevice/ESPdevice.ino   Arduino sketch for the ESP32
 app/ESPdevice.cpp                  The Windows app (one file; includes the website)
 app/default_logo.h                 Built-in logo, embedded as bytes
 app/espdevice.rc, espdevice.ico    Tray/exe icon
+installer/ESPdevice.iss            Inno Setup script for ESPdevice-Setup.exe
+.github/workflows/build.yml        Builds the exe, installer and portable zip; attaches them to releases
 ```
+
+To publish a new version: push a tag like `v1.0.1`. GitHub Actions builds everything and attaches it to a Release.
+
+## License
+
+The code is licensed under the [GNU GPL v3.0](LICENSE). The logo and icon artwork are made by bagelings and are all rights reserved.
