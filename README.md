@@ -74,11 +74,23 @@ You still need to build and flash the keypad itself, see [Make your own keypad](
 - Live key visualizer: presses are pushed to the page instantly (Server-Sent Events, no polling).
 - Debugger: link status and COM port, reports per second, event log (freeze/clear), your Windows hold delay and repeat rate, and measured latency (last / average / max) from byte received to `SendInput` returned.
 
+**Windows (new in 1.1)**
+- Every section (PROFILE, VISUALIZER, KEYBINDS, SERVICE, DEBUGGER, THEME, SETTINGS) is a floating window. Drag it by the title bar to put it anywhere, with no snapping to the screen edges.
+- Resize a window by dragging the small corner mark at its bottom-left.
+- Click the `v` button to minimize a window into a small icon window. It can be dragged and resized too, and `^` (or a double-click) opens the window again.
+- Windows snap to invisible guide lines (one vertical line down the middle and horizontal lines at 25%, 50% and 75%). Hold ALT while dragging to skip snapping, or turn snapping off in SETTINGS.
+- Everything is remembered exactly: position, size, minimized state, icon window position and size, stacking order and snaps, saved in `config\layout.json`. **SETTINGS > RESET WINDOW LAYOUT** puts everything back.
+- Icons for minimized windows: put PNG files in `config\icons\` named `Profile_icon.png`, `Visualizer_icon.png`, `Keybinds_icon.png`, `Service_icon.png`, `Debugger_icon.png`, `Theme_icon.png` and `Settings_icon.png` (square, transparent background works best). Without them a placeholder is shown.
+
+**Settings and extras**
+- The `[ SETTINGS ]` button at the top right opens the settings window (saved in `config\settings.json`): window snapping, showing the snap guide lines (off by default), and which social links to show.
+- Social links (GitHub, YouTube, TikTok, Discord) sit in the bottom-left corner and can be switched off one by one.
+- The version number shows next to the credit in the bottom-right corner.
+
 **Themes and look**
 - Themes: Light (default), Dark, Terminal and Bagel, plus your own. COPY a theme and edit about 36 individual colors with live preview; saved to `config\theme.json`.
 - The default logo is recolored automatically to match the active theme (custom themes too).
 - Click the logo to use your own PNG (max 1 MB, 1024x1024 px; square recommended). Or drop a PNG at `config\default_logo.png` to change the built-in default. `[reset]` goes back to default.
-- Each section can be folded with the `v [ TITLE ]` bars (remembered per browser).
 - Optional plain-text title art in `config\art.txt`, shown only when there is no logo image.
 
 **Service**
@@ -182,6 +194,7 @@ Open http://localhost:9191 (or tray icon > Open Settings).
 
 | Section | What it does |
 |---------|--------------|
+| **SETTINGS** | Opened with the button at the top right: window snapping, snap guides, social links, reset window layout. |
 | **PROFILE** | Pick, add, rename or delete profiles (up to 99). |
 | **VISUALIZER** | Shows the 3 keys lighting up live, with their current bindings. |
 | **KEYBINDS** | Edit each key's binding: type + ENTER, or CAPTURE. |
@@ -223,12 +236,13 @@ The board sends one byte per key event at 921600 baud, so you can write your own
 firmware/ESPdevice/ESPdevice.ino   Arduino sketch for the ESP32
 app/ESPdevice.cpp                  The Windows app (one file; includes the website)
 app/default_logo.h                 Built-in logo, embedded as bytes
+app/version.h                      The version number shown on the page (the release build writes it from the git tag)
 app/espdevice.rc, espdevice.ico    Tray/exe icon
 installer/ESPdevice.iss            Inno Setup script for ESPdevice-Setup.exe
 .github/workflows/build.yml        Builds the exe, installer and portable zip; attaches them to releases
 ```
 
-To publish a new version: push a tag like `v1.0.1`. GitHub Actions builds everything and attaches it to a Release.
+To publish a new version: push a tag like `v1.1.1`. GitHub Actions writes the version number into `app/version.h`, builds everything and attaches it to a Release.
 
 ## License
 

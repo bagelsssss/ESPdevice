@@ -3,11 +3,12 @@
 Most people should download the installer from the Releases page instead.
 GitHub Actions builds the same thing on every push (`.github/workflows/build.yml`).
 
-## Files (keep all four in ONE folder)
+## Files (keep all of these in ONE folder)
 - `ESPdevice.cpp`
 - `default_logo.h`  (the built-in logo, embedded as bytes; included by ESPdevice.cpp)
 - `espdevice.rc`   (`101 ICON "espdevice.ico"`)
 - `espdevice.ico`
+- `version.h`  (`#define ESP_VERSION "1.1.0"`, the version shown on the page; optional, 1.1.0 is built in if it is missing)
 
 ## Build (Developer Command Prompt for VS)
 

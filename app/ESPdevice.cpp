@@ -55,6 +55,12 @@
 namespace fs = std::filesystem;
 
 #include "default_logo.h" // built-in logo bytes (DEFAULT_LOGO_PNG); config\default_logo.png overrides it
+#if __has_include("version.h")
+#include "version.h" // written by the release build from the git tag: #define ESP_VERSION "1.1.0"
+#endif
+#ifndef ESP_VERSION
+#define ESP_VERSION "1.1.0"
+#endif
 
 // ---- Fixed config -----------------------------------------------------
 
@@ -69,7 +75,7 @@ constexpr int MAX_NAME_LEN = 24;
 constexpr int HTTP_PORT = 9191;
 constexpr int MAX_SSE_CLIENTS = 8;
 constexpr DWORD READ_WAKE_MS = 8; // read timeout: how often the device thread wakes with no data (repeat/timeout checks)
-constexpr const char* VERSION_TEXT = "ESPdevice v1";
+constexpr const char* VERSION_TEXT = "ESPdevice v" ESP_VERSION;
 constexpr UINT WM_TRAYICON = WM_APP + 1;
 constexpr UINT ID_TRAY_OPEN = 1001;
 constexpr UINT ID_TRAY_PAUSE = 1002;
@@ -968,6 +974,7 @@ static std::string EvToJson(const EvCopy& e) {
 static std::atomic<int> g_sseClients{ 0 };
 static std::mutex g_themeMutex;
 static std::mutex g_logoMutex;
+static std::mutex g_cfgMutex; // config\layout.json and config\settings.json
 
 // Accepts only a real PNG of sane size: signature + IHDR, <= 1 MB, <= 1024x1024.
 static bool IsValidLogoPng(const std::string& d) {
@@ -1097,6 +1104,44 @@ static void HandleRequest(SOCKET client) {
             WriteFileAtomic(g_configDir / L"theme.json", body);
             response = HttpResponse("200 OK", "application/json", "{\"ok\":true}");
         }
+    }
+    else if (method == "GET" && (path == "/api/layout" || path == "/api/settings")) {
+        // Window layout and page settings: stored as JSON exactly as the page sent it (the page validates everything it reads).
+        const wchar_t* fn = (path == "/api/layout") ? L"layout.json" : L"settings.json";
+        std::string txt;
+        {
+            std::lock_guard<std::mutex> lk(g_cfgMutex);
+            std::ifstream f(g_configDir / fn, std::ios::binary);
+            if (f.is_open()) { std::ostringstream ss; ss << f.rdbuf(); txt = ss.str(); }
+        }
+        response = HttpResponse("200 OK", "application/json", txt.empty() ? "{}" : txt);
+    }
+    else if (method == "POST" && (path == "/api/layout" || path == "/api/settings")) {
+        const size_t cap = (path == "/api/layout") ? 100000 : 20000;
+        if (body.empty() || body.size() > cap || body[0] != '{') {
+            response = HttpResponse("400 Bad Request", "application/json", "{\"ok\":false}");
+        } else {
+            const wchar_t* fn = (path == "/api/layout") ? L"layout.json" : L"settings.json";
+            std::lock_guard<std::mutex> lk(g_cfgMutex);
+            WriteFileAtomic(g_configDir / fn, body);
+            response = HttpResponse("200 OK", "application/json", "{\"ok\":true}");
+        }
+    }
+    else if (method == "GET" && path.rfind("/api/icon/", 0) == 0) {
+        // Minimized-window icons: config\icons\<Name>_icon.png (for example Profile_icon.png). 404 = the page shows its placeholder.
+        std::string name = path.substr(10);
+        bool okName = !name.empty() && name.size() <= 24;
+        for (char c : name) if (!std::isalnum((unsigned char)c) && c != '_') okName = false;
+        std::string png;
+        if (okName) {
+            std::wstring wname(name.begin(), name.end());
+            std::ifstream f(g_configDir / L"icons" / (wname + L"_icon.png"), std::ios::binary);
+            if (f.is_open()) { std::ostringstream ss; ss << f.rdbuf(); png = ss.str(); }
+        }
+        if (png.size() < 8 || png.size() > 1048576 || png.compare(0, 8, "\x89PNG\r\n\x1a\n", 8) != 0)
+            response = HttpResponse("204 No Content", "text/plain", ""); // no icon file: the page keeps its placeholder (204 = no console noise)
+        else
+            response = HttpResponse("200 OK", "image/png", png);
     }
     else if (method == "GET" && path == "/api/logo") {
         std::string png;
@@ -1500,11 +1545,6 @@ static const char* HTML_HEAD = R"HTMLX(<!DOCTYPE html>
   --font: Consolas, "Lucida Console", "Courier New", monospace;
   --size: 14px;
 }
-/* ===== layout (grid + normal flow: nothing is positioned, nothing overlaps) ===== */
-* { box-sizing: border-box; }
-html, body { margin: 0; background: var(--c-bg); color: var(--c-fg); font-family: var(--font); font-size: var(--size); }
-.wrap { max-width: 1200px; margin: 0 auto; padding: 16px; min-height: 100vh; display: flex; flex-direction: column; }
-.hero { display: flex; align-items: center; gap: 20px; margin: 0 0 8px 0; }
 /* logo: click to replace with your own PNG (1:1 recommended). Max display size is set here. */
 .logo { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; max-width: 220px; min-width: 100px; }
 .logobox { cursor: pointer; }
@@ -1522,19 +1562,7 @@ html, body { margin: 0; background: var(--c-bg); color: var(--c-fg); font-family
 .art { margin: 0; line-height: 1.1; font-size: 16px; white-space: pre; color: var(--c-art); }
 .brand { margin: 0; font-size: 2.6em; letter-spacing: 1px; line-height: 1; color: var(--c-title); }
 .brand .cur { color: var(--c-cursor); }
-.status { margin: 0 0 14px 0; color: var(--c-status); }
-.grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
-@media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); } }
-.col { display: grid; gap: 16px; min-width: 0; }
-.box { border: 1px solid var(--c-border); padding: 10px 12px; min-width: 0; }
-.box h2 { margin: 0 0 10px 0; font-size: 1em; font-weight: normal; color: var(--c-heading);
           display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; }
-.box h2:hover { color: var(--c-fg); }
-.box h2:focus-visible { outline: 1px dashed var(--c-border); outline-offset: 3px; }
-.box h2 .chev { display: inline-block; width: 1.2em; text-align: center; transition: transform 0.15s; } /* v = click to open, flips to ^ when open */
-.box.open h2 .chev { transform: rotate(180deg); }
-.box:not(.open) h2 { margin-bottom: 0; }
-.box:not(.open) > .boxbody { display: none; }
 .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 button, select, input[type=text] {
   font-family: var(--font); font-size: var(--size); min-width: 0; padding: 4px 8px;
@@ -1573,13 +1601,57 @@ td input[type=text] { width: 100%; }
 .tfield label { flex: 1; min-width: 0; }
 .tfield input[type=text] { width: 82px; flex: none; }
 .preview { display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 0 0 0; }
-.credit { margin-top: auto; padding-top: 18px; align-self: flex-end; text-align: right; opacity: 0.5; color: var(--c-credit); }
+)HTMLX";
+
+static const char* HTML_CSS_WIN = R"HTMLX(/* ===== layout: a fixed header, floating windows, and corner widgets ===== */
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg); color: var(--c-fg); font-family: var(--font); font-size: var(--size); }
+.hdr { position: fixed; left: 16px; top: 16px; z-index: 1; max-width: 60vw; }
+.hero { display: flex; align-items: center; gap: 20px; margin: 0 0 8px 0; }
+.status { margin: 0; color: var(--c-status); }
+/* windows live in #desk (pointer events pass through the empty parts of it) */
+#desk { position: fixed; left: 0; top: 0; right: 0; bottom: 0; z-index: 2; pointer-events: none; visibility: hidden; }
+#desk.ready { visibility: visible; }
+#desk > * { pointer-events: auto; }
+.win { position: absolute; display: flex; flex-direction: column; background: var(--c-bg); border: 1px solid var(--c-border); min-width: 0; min-height: 0; overflow: hidden; }
+.wbar { flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 8px 4px 8px; cursor: move; user-select: none; -webkit-user-select: none; touch-action: none; }
+.wbar h2 { margin: 0; font-size: 1em; font-weight: normal; color: var(--c-heading); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.win.front .wbar h2 { color: var(--c-fg); }
+.grip { flex: none; width: 1.5em; height: 1.5em; border: 1px solid var(--c-border); display: flex; align-items: center; justify-content: center; font-size: 0.8em; line-height: 1; color: var(--c-dim); }
+.wbtn { flex: none; width: 1.7em; height: 1.7em; padding: 0; display: flex; align-items: center; justify-content: center; line-height: 1; cursor: pointer; }
+.wbody { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 12px 20px 12px; scrollbar-width: thin; scrollbar-color: var(--c-border) var(--c-bg); }
+.rsz { position: absolute; left: 0; bottom: 0; width: 16px; height: 16px; cursor: nesw-resize; touch-action: none; z-index: 2; }
+.rsz::after { content: ""; position: absolute; left: 3px; bottom: 3px; width: 8px; height: 8px; border-left: 2px solid var(--c-dim); border-bottom: 2px solid var(--c-dim); }
+.rsz:hover::after { border-color: var(--c-fg); }
+/* minimized: a small icon window */
+.mini { position: absolute; display: none; background: var(--c-bg); border: 1px solid var(--c-border); cursor: move; touch-action: none; user-select: none; -webkit-user-select: none; overflow: hidden; }
+.mph, .mimg { position: absolute; left: 8px; top: 8px; width: calc(100% - 16px); height: calc(100% - 16px); pointer-events: none; }
+.mph { color: var(--c-fg); } .mph svg { display: block; width: 100%; height: 100%; }
+.mimg { object-fit: contain; }
+.mcar { position: absolute; left: 2px; top: 2px; width: 18px; height: 18px; font-size: 12px; z-index: 3; }
+/* corner widgets */
+.gear { position: fixed; right: 16px; top: 16px; z-index: 3; }
+.socials { position: fixed; left: 16px; bottom: 12px; z-index: 1; display: flex; gap: 14px; }
+.socials a { color: var(--c-dim); text-decoration: none; }
+.socials a:hover { color: var(--c-fg); text-decoration: underline; }
+.credit { position: fixed; right: 16px; bottom: 12px; z-index: 1; text-align: right; opacity: 0.5; color: var(--c-credit); }
+/* snap guides: always invisible unless "show snap guides" is switched on in SETTINGS */
+.guide { position: fixed; z-index: 1; pointer-events: none; display: none; border: 0 dashed #d00000; }
+.gv { top: 0; bottom: 0; border-left-width: 1px; } .gh { left: 0; right: 0; border-top-width: 1px; }
+/* per-window tweaks */
+#w-debugger .wbody { display: flex; flex-direction: column; }
+#w-debugger .wbody > * { flex: none; }
+#w-debugger #log { flex: 1 1 90px; height: auto; min-height: 70px; }
+.opt { display: flex; align-items: center; gap: 8px; margin: 5px 0; cursor: pointer; user-select: none; }
+.opt input { width: 14px; height: 14px; margin: 0; accent-color: var(--c-fg); }
+.setgrp { margin: 12px 0 4px 0; color: var(--c-heading); } .setgrp:first-child { margin-top: 2px; }
 </style>
 </head>
 )HTMLX";
 
 static const char* HTML_BODY = R"HTMLX(<body>
-<div class="wrap">
+<div class="guide gv" id="gV"></div><div class="guide gh" id="gH25"></div><div class="guide gh" id="gH50"></div><div class="guide gh" id="gH75"></div>
+<div class="hdr">
 <div class="hero">
 <div class="logo">
 <div class="logobox" id="logoBox" role="button" tabindex="0" title="Click to change the logo (PNG, 1:1 ratio recommended)"
@@ -1597,12 +1669,12 @@ static const char* HTML_BODY = R"HTMLX(<body>
 <h1 class="brand">ESPdevice<span class="cur">_</span></h1>
 </div>
 <p class="status" id="status">connecting to service...</p>
+</div>
+<button class="gear" id="gearBtn" onclick="wmToggleSettings()" title="Open / close the settings window">[ SETTINGS ]</button>
 
-<div class="grid">
-<div class="col">
+<div id="desk">
 
-<div class="box">
-<h2>[ PROFILE ]</h2>
+<section class="win" id="w-profile" data-title="PROFILE" data-abbr="PRO"><div class="wbody">
 <div class="row">
   <select id="profileSelect" onchange="selectProfile()"></select>
   <button onclick="addProfile()">+ ADD</button>
@@ -1610,15 +1682,13 @@ static const char* HTML_BODY = R"HTMLX(<body>
   <button onclick="deleteProfile()">DELETE</button>
 </div>
 <p class="dim" id="profileCount"></p>
-</div>
+</div></section>
 
-<div class="box">
-<h2>[ VISUALIZER ]</h2>
+<section class="win" id="w-visualizer" data-title="VISUALIZER" data-abbr="VIS"><div class="wbody">
 <div class="keys" id="keys"></div>
-</div>
+</div></section>
 
-<div class="box">
-<h2>[ KEYBINDS ]</h2>
+<section class="win" id="w-keybinds" data-title="KEYBINDS" data-abbr="KEY"><div class="wbody">
 <table>
   <thead><tr><th>KEY</th><th>BINDING (type, then press ENTER to save)</th><th></th></tr></thead>
   <tbody id="bindRows"></tbody>
@@ -1626,21 +1696,16 @@ static const char* HTML_BODY = R"HTMLX(<body>
 <datalist id="keynames"></datalist>
 <p class="err" id="err"></p>
 <p class="dim">Type a binding and press ENTER to save it (e.g. A, ?, CTRL+SHIFT+A, F13). Or click CAPTURE and press any key (hold CTRL/SHIFT/ALT first for a combo), or type names (SPACE, F13, NUM5, VOL_UP...) or characters (? &lt; &gt; { } | : " ~ ! @ ...). Typed shifted characters are stored as SHIFT+key. Use PLUS for the + key. Combos join with +, up to 4 keys.</p>
-</div>
+</div></section>
 
-<div class="box">
-<h2>[ SERVICE ]</h2>
+<section class="win" id="w-service" data-title="SERVICE" data-abbr="SVC"><div class="wbody">
 <div class="row">
   <button id="pauseBtn" onclick="toggleService()">PAUSE</button>
   <button onclick="terminateService()">TERMINATE</button>
 </div>
-</div>
+</div></section>
 
-</div>
-<div class="col">
-
-<div class="box">
-<h2>[ DEBUGGER ]</h2>
+<section class="win" id="w-debugger" data-title="DEBUGGER" data-abbr="DBG"><div class="wbody">
 <div class="stats">
   <div>link: <span id="sLink">-</span></div>
   <div>reports/s: <span id="sRate">-</span></div>
@@ -1658,10 +1723,9 @@ static const char* HTML_BODY = R"HTMLX(<body>
 </div>
 <div id="log"></div>
 <p class="dim">latency = keypad byte received by the service until SendInput returned (excludes USB transit time).</p>
-</div>
+</div></section>
 
-<div class="box">
-<h2>[ THEME ]</h2>
+<section class="win" id="w-theme" data-title="THEME" data-abbr="THM"><div class="wbody">
 <div class="row">
   <select id="themeSelect" onchange="pickTheme()"></select>
   <button onclick="copyTheme()">COPY</button>
@@ -1674,12 +1738,24 @@ static const char* HTML_BODY = R"HTMLX(<body>
   <div class="key small on"><div class="n">1</div></div>
 </div>
 <div id="themeFields"></div>
-</div>
+</div></section>
+
+<section class="win" id="w-settings" data-title="SETTINGS" data-abbr="SET" data-closable="1"><div class="wbody">
+<div class="setgrp">WINDOWS</div>
+<label class="opt"><input type="checkbox" id="optSnap" onchange="wmSettingChanged()"> snap windows to the guide lines (hold ALT while dragging to skip)</label>
+<label class="opt"><input type="checkbox" id="optGuides" onchange="wmSettingChanged()"> show the snap guide lines (off = invisible)</label>
+<div class="row"><button onclick="resetLayout()">RESET WINDOW LAYOUT</button></div>
+<div class="setgrp">SOCIAL LINKS (bottom left)</div>
+<label class="opt"><input type="checkbox" id="optSocial_github" onchange="wmSettingChanged()"> GitHub</label>
+<label class="opt"><input type="checkbox" id="optSocial_youtube" onchange="wmSettingChanged()"> YouTube</label>
+<label class="opt"><input type="checkbox" id="optSocial_tiktok" onchange="wmSettingChanged()"> TikTok</label>
+<label class="opt"><input type="checkbox" id="optSocial_discord" onchange="wmSettingChanged()"> Discord</label>
+<p class="dim">More options will show up here in future versions. Saved in config\settings.json.</p>
+</div></section>
 
 </div>
-</div>
-<div class="credit">made by bagelings. assisted with claude</div>
-</div>
+<nav class="socials" id="socials"></nav>
+<div class="credit">made by bagelings, assisted by claude &middot; v@@VER@@</div>
 )HTMLX";
 
 static const char* HTML_JS1 = R"HTMLX(<script>
@@ -1951,6 +2027,353 @@ async function loadTheme() {
 (function () { try { const c = JSON.parse(localStorage.getItem("espdevice-theme") || "null"); if (c) applyColors(c); } catch (e) {} })();
 )HTMLX";
 
+static const char* HTML_JS_WM1 = R"HTMLX(
+// ================= WINDOWS (v1.1) =================
+// Every section is a floating window: drag by the title bar, resize from the bottom-left corner, minimize with "v"
+// (it becomes a small icon window; "^" opens it again). Positions, sizes, minimized state, stacking order and snaps
+// are saved to config\layout.json. Snap guides are invisible: one vertical line (centre) and three horizontal ones.
+const WIN_IDS = ["profile", "visualizer", "keybinds", "service", "debugger", "theme", "settings"];
+const WIN_ICON = { profile: "Profile", visualizer: "Visualizer", keybinds: "Keybinds", service: "Service", debugger: "Debugger", theme: "Theme", settings: "Settings" }; // config\icons\<Name>_icon.png
+const GUIDE_X = { v: 0.5 };
+const GUIDE_Y = { h25: 0.25, h50: 0.5, h75: 0.75 };
+const SNAP_PX = 8, MIN_W = 200, MIN_H = 90, MINI_MIN = 36, MINI_W = 88, MINI_H = 64;
+const SOCIALS = [
+  { id: "github",  label: "github",  url: "https://github.com/bagelsssss" },
+  { id: "youtube", label: "youtube", url: "https://www.youtube.com/@bagelsssss" },
+  { id: "tiktok",  label: "tiktok",  url: "https://www.tiktok.com/@bagel.sssss" },
+  { id: "discord", label: "discord", url: "https://discord.com/users/920728577622835251" }
+];
+const WM = { L: null, set: null, el: {}, mini: {}, timer: 0, chain: Promise.resolve(), schain: Promise.resolve() };
+
+const has = (o, k) => typeof k === "string" && Object.prototype.hasOwnProperty.call(o, k);
+const wmNum = (v, d) => (typeof v === "number" && isFinite(v) && Math.abs(v) < 100000) ? Math.round(v) : d;
+function wmVW() { return document.documentElement.clientWidth; }
+function wmVH() { return document.documentElement.clientHeight; }
+const gxPx = k => Math.round(wmVW() * GUIDE_X[k]);
+const gyPx = k => Math.round(wmVH() * GUIDE_Y[k]);
+
+// ---- model: { order:[ids bottom..top], win:{ id:{ n:frame, m:frame, min, open } } }, frame = { x, y, w, h, sn:{l,r,t,b}, p } ----
+function wmCleanFrame(f, d, minW, minH) {
+  f = (f && typeof f === "object") ? f : {};
+  const sn = {};
+  if (f.sn && typeof f.sn === "object") {
+    if (has(GUIDE_X, f.sn.l)) sn.l = f.sn.l;
+    if (has(GUIDE_X, f.sn.r)) sn.r = f.sn.r;
+    if (has(GUIDE_Y, f.sn.t)) sn.t = f.sn.t;
+    if (has(GUIDE_Y, f.sn.b)) sn.b = f.sn.b;
+  }
+  return { x: wmNum(f.x, d.x), y: wmNum(f.y, d.y), w: Math.max(minW, wmNum(f.w, d.w)), h: Math.max(minH, wmNum(f.h, d.h)), sn: sn, p: !!f.p };
+}
+
+function wmDefaults() {
+  const vw = wmVW(), vh = wmVH();
+  const hb = document.querySelector(".hdr").getBoundingClientRect();
+  const colW = Math.max(MIN_W, Math.min(580, Math.floor((vw - 48) / 2)));
+  const cols = [
+    { x: 16, y: Math.max(Math.ceil(hb.bottom), 176) + 8, ids: ["profile", "visualizer", "keybinds", "service"] },
+    { x: Math.max(16, Math.min(16 + colW + 16, vw - colW - 16)), y: 56, ids: ["debugger", "theme"] }
+  ];
+  const H = { profile: 110, visualizer: 150, keybinds: 290, service: 90, debugger: 520, theme: 500, settings: 400 };
+  const L = { v: 1, order: WIN_IDS.slice(), win: {} };
+  const mk = (id, x, y, w, h, open) => ({
+    n: { x: x, y: y, w: w, h: h, sn: {}, p: false },
+    m: { x: x, y: y, w: MINI_W, h: MINI_H, sn: {}, p: false },
+    min: false, open: open
+  });
+  cols.forEach(c => {
+    // a column that is taller than the browser window gets its windows shortened (never below MIN_H); their content scrolls
+    const gap = 12, n = c.ids.length, avail = vh - c.y - 44 - gap * (n - 1); // keeps the bottom strip (socials, credit) free
+    const sum = c.ids.reduce((t, id) => t + H[id], 0), floor = n * MIN_H;
+    const k = sum <= avail ? 1 : Math.max(0, (avail - floor) / (sum - floor));
+    let y = c.y;
+    c.ids.forEach(id => {
+      const h = Math.round(MIN_H + (H[id] - MIN_H) * k);
+      L.win[id] = mk(id, c.x, y, colW, Math.max(MIN_H, h), true);
+      y += Math.max(MIN_H, h) + gap;
+    });
+  });
+  const sw = Math.min(360, Math.max(MIN_W, vw - 32));
+  L.win.settings = mk("settings", Math.max(16, vw - sw - 16), 56, sw, Math.max(MIN_H, Math.min(H.settings, vh - 100)), false);
+  return L;
+}
+
+function wmClean(raw) {
+  const D = wmDefaults(), L = { v: 1, order: [], win: {} };
+  const rw = (raw && typeof raw === "object" && raw.win && typeof raw.win === "object") ? raw.win : {};
+  WIN_IDS.forEach(id => {
+    const r = has(rw, id) && rw[id] && typeof rw[id] === "object" ? rw[id] : null;
+    const d = D.win[id];
+    if (!r) { L.win[id] = d; return; }
+    L.win[id] = {
+      n: wmCleanFrame(r.n, d.n, MIN_W, MIN_H), m: wmCleanFrame(r.m, d.m, MINI_MIN, MINI_MIN),
+      min: !!r.min, open: id === "settings" ? !!r.open : true
+    };
+  });
+  const seen = {};
+  if (raw && Array.isArray(raw.order)) raw.order.forEach(id => { if (has(L.win, id) && !seen[id]) { seen[id] = 1; L.order.push(id); } });
+  WIN_IDS.forEach(id => { if (!seen[id]) L.order.push(id); });
+  return L;
+}
+
+// ---- geometry: the stored rectangle + its snaps -> the rectangle shown now (follows the guides if the browser window changed size) ----
+function wmResolve(f, minW, minH) {
+  const sn = f.sn || {};
+  let x = f.x, y = f.y, w = Math.max(minW, f.w), h = Math.max(minH, f.h);
+  if (has(GUIDE_X, sn.l)) x = gxPx(sn.l); else if (has(GUIDE_X, sn.r)) x = gxPx(sn.r) - w;
+  if (has(GUIDE_Y, sn.t)) {
+    y = gyPx(sn.t);
+    if (has(GUIDE_Y, sn.b) && gyPx(sn.b) - y >= minH) h = gyPx(sn.b) - y;
+  } else if (has(GUIDE_Y, sn.b)) y = gyPx(sn.b) - h;
+  const vw = wmVW(), vh = wmVH();
+  x = Math.min(Math.max(x, 40 - w), vw - 40);   // the title bar always stays reachable
+  y = Math.min(Math.max(y, 0), vh - 30);
+  return { x: x, y: y, w: w, h: h };
+}
+
+function wmNearest(v, table, px) {
+  let best = null;
+  for (const k in table) { const g = px(k), d = Math.abs(v - g); if (d <= SNAP_PX && (!best || d < best.d)) best = { k: k, g: g, d: d }; }
+  return best;
+}
+function wmSnapMove(x, y, w, h, on) {
+  const sn = {};
+  if (on) {
+    const a = wmNearest(x, GUIDE_X, gxPx), b = wmNearest(x + w, GUIDE_X, gxPx);
+    if (a && (!b || a.d <= b.d)) { x = a.g; sn.l = a.k; } else if (b) { x = b.g - w; sn.r = b.k; }
+    const c = wmNearest(y, GUIDE_Y, gyPx), d = wmNearest(y + h, GUIDE_Y, gyPx);
+    if (c && (!d || c.d <= d.d)) { y = c.g; sn.t = c.k; } else if (d) { y = d.g - h; sn.b = d.k; }
+  }
+  return { x: x, y: y, sn: sn };
+}
+
+// ---- showing windows ----
+function wmSetRect(el, r) { el.style.left = r.x + "px"; el.style.top = r.y + "px"; el.style.width = r.w + "px"; el.style.height = r.h + "px"; }
+function wmPlace(id) {
+  const W = WM.L.win[id], el = WM.el[id], mi = WM.mini[id];
+  wmSetRect(el, wmResolve(W.n, MIN_W, MIN_H));
+  wmSetRect(mi, wmResolve(W.m, MINI_MIN, MINI_MIN));
+  const z = String(10 + WM.L.order.indexOf(id));
+  el.style.zIndex = z; mi.style.zIndex = z;
+  const wasHidden = el.style.display === "none";
+  el.style.display = (W.open && !W.min) ? "flex" : "none";
+  mi.style.display = (W.open && W.min) ? "block" : "none";
+  if (id === "debugger" && wasHidden && W.open && !W.min) { const lg = $("log"); lg.scrollTop = lg.scrollHeight; } // a hidden log forgets its scroll position
+}
+function wmMarkFront() {
+  let top = null;
+  for (let i = WM.L.order.length - 1; i >= 0; i--) { const id = WM.L.order[i], W = WM.L.win[id]; if (W.open && !W.min) { top = id; break; } }
+  WIN_IDS.forEach(id => WM.el[id].classList.toggle("front", id === top));
+}
+function wmGuides() {
+  const on = !!(WM.set && WM.set.guides);
+  ["gV", "gH25", "gH50", "gH75"].forEach(g => { $(g).style.display = on ? "block" : "none"; });
+  $("gV").style.left = gxPx("v") + "px";
+  $("gH25").style.top = gyPx("h25") + "px"; $("gH50").style.top = gyPx("h50") + "px"; $("gH75").style.top = gyPx("h75") + "px";
+}
+function wmPlaceAll() { WIN_IDS.forEach(wmPlace); wmMarkFront(); wmGuides(); }
+function wmFront(id) {
+  const o = WM.L.order;
+  if (o[o.length - 1] === id) return;
+  o.splice(o.indexOf(id), 1); o.push(id);
+  wmPlaceAll(); wmSave();
+}
+
+// ---- saving (config\layout.json): after every change, in order; flushed if the tab is closing ----
+function wmSave() {
+  if (!WM.L) return;
+  clearTimeout(WM.timer);
+  WM.timer = setTimeout(() => { WM.timer = 0; wmSaveNow(false); }, 150);
+}
+function wmSaveNow(keepalive) {
+  if (!WM.L) return;
+  WM.L.vw = wmVW(); WM.L.vh = wmVH();
+  const body = JSON.stringify(WM.L);
+  const send = () => fetch("/api/layout", { method: "POST", headers: { "X-ESPdevice": "1", "Content-Type": "application/json" }, body: body, keepalive: !!keepalive && body.length < 60000 }).catch(() => {});
+  if (keepalive) send(); else WM.chain = WM.chain.then(send);
+}
+function wmFlush() { if (WM.timer) { clearTimeout(WM.timer); WM.timer = 0; wmSaveNow(true); } }
+)HTMLX";
+
+static const char* HTML_JS_WM2 = R"HTMLX(
+// ---- dragging (title bar) and resizing (bottom-left corner) ----
+function wmFrameOf(id, mini) { const W = WM.L.win[id]; return mini ? W.m : W.n; }
+
+function wmBeginMove(ev, id, isMini) {
+  if (ev.button !== 0 || ev.target.closest("button, a, input, select, textarea")) return;
+  const F = wmFrameOf(id, isMini), minW = isMini ? MINI_MIN : MIN_W, minH = isMini ? MINI_MIN : MIN_H;
+  const base = wmResolve(F, minW, minH);
+  wmFront(id);
+  const grab = ev.currentTarget, sx = ev.clientX, sy = ev.clientY;
+  let moved = false;
+  try { grab.setPointerCapture(ev.pointerId); } catch (e) {}
+  const move = e => {
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if (!moved && Math.abs(dx) + Math.abs(dy) < 3) return;
+    moved = true;
+    const nx = Math.min(Math.max(base.x + dx, 40 - base.w), wmVW() - 40);
+    const ny = Math.min(Math.max(base.y + dy, 0), wmVH() - 30);
+    const r = wmSnapMove(nx, ny, base.w, base.h, WM.set.snap && !e.altKey);
+    F.x = r.x; F.y = r.y; F.w = base.w; F.h = base.h; F.sn = r.sn;
+    if (isMini) F.p = true;
+    wmPlace(id);
+  };
+  const end = () => {
+    grab.removeEventListener("pointermove", move); grab.removeEventListener("pointerup", end); grab.removeEventListener("pointercancel", end);
+    if (moved) wmSave();
+  };
+  grab.addEventListener("pointermove", move); grab.addEventListener("pointerup", end); grab.addEventListener("pointercancel", end);
+}
+
+function wmBeginResize(ev, id, isMini) {
+  if (ev.button !== 0) return;
+  ev.stopPropagation();
+  const F = wmFrameOf(id, isMini), minW = isMini ? MINI_MIN : MIN_W, minH = isMini ? MINI_MIN : MIN_H;
+  const base = wmResolve(F, minW, minH), right = base.x + base.w;
+  wmFront(id);
+  const grab = ev.currentTarget, sx = ev.clientX, sy = ev.clientY;
+  const keepT = F.sn.t, keepR = F.sn.r;
+  let moved = false;
+  try { grab.setPointerCapture(ev.pointerId); } catch (e) {}
+  const move = e => {
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if (!moved && Math.abs(dx) + Math.abs(dy) < 2) return;
+    moved = true;
+    const snapOn = WM.set.snap && !e.altKey, sn = {};
+    if (keepT) sn.t = keepT;      // the top and right edges stay where they are
+    if (keepR) sn.r = keepR;
+    let nx = Math.max(Math.min(base.x + dx, right - minW), Math.min(base.x, 0));
+    let nb = Math.min(Math.max(base.y + base.h + dy, base.y + minH), wmVH());
+    if (snapOn) {
+      const a = wmNearest(nx, GUIDE_X, gxPx);
+      if (a && right - a.g >= minW) { nx = a.g; sn.l = a.k; }
+      const b = wmNearest(nb, GUIDE_Y, gyPx);
+      if (b && b.g - base.y >= minH) { nb = b.g; sn.b = b.k; }
+    }
+    F.x = nx; F.w = right - nx; F.y = base.y; F.h = nb - base.y; F.sn = sn;
+    if (isMini) F.p = true;
+    wmPlace(id);
+  };
+  const end = () => {
+    grab.removeEventListener("pointermove", move); grab.removeEventListener("pointerup", end); grab.removeEventListener("pointercancel", end);
+    if (moved) wmSave();
+  };
+  grab.addEventListener("pointermove", move); grab.addEventListener("pointerup", end); grab.addEventListener("pointercancel", end);
+}
+
+// ---- minimize / restore / settings window ----
+function wmMinimize(id) {
+  const W = WM.L.win[id];
+  if (!W.m.p) { const r = wmResolve(W.n, MIN_W, MIN_H); W.m.x = r.x; W.m.y = r.y; W.m.sn = {}; } // an icon window you never moved opens where its window was
+  W.min = true;
+  wmPlaceAll(); wmSave();
+}
+function wmRestore(id) {
+  WM.L.win[id].min = false;
+  const o = WM.L.order; o.splice(o.indexOf(id), 1); o.push(id);
+  wmPlaceAll(); wmSave();
+}
+function wmToggleSettings() {
+  const W = WM.L.win.settings, o = WM.L.order;
+  if (W.open) W.open = false;
+  else { W.open = true; W.min = false; o.splice(o.indexOf("settings"), 1); o.push("settings"); }
+  wmPlaceAll(); wmSave();
+}
+function resetLayout() {
+  if (!confirm("Put every window back in its default place and size?")) return;
+  const keepOpen = WM.L.win.settings.open;
+  WM.L = wmClean(null);
+  WM.L.win.settings.open = keepOpen;
+  wmPlaceAll(); wmSaveNow(false);
+}
+
+// ---- building the windows ----
+function wmBuild() {
+  const desk = $("desk");
+  WIN_IDS.forEach(id => {
+    const el = $("w-" + id), title = el.dataset.title, abbr = el.dataset.abbr;
+    WM.el[id] = el;
+    const bar = document.createElement("div"); bar.className = "wbar";
+    const grip = document.createElement("span"); grip.className = "grip"; grip.textContent = "="; grip.setAttribute("aria-hidden", "true");
+    const mb = document.createElement("button"); mb.className = "wbtn"; mb.textContent = "v"; mb.title = "Minimize"; mb.setAttribute("aria-label", "Minimize " + title);
+    mb.onclick = () => wmMinimize(id);
+    const h = document.createElement("h2"); h.textContent = "[ " + title + " ]";
+    bar.appendChild(grip); bar.appendChild(mb); bar.appendChild(h);
+    if (el.dataset.closable) {
+      const cb = document.createElement("button"); cb.className = "wbtn"; cb.textContent = "x"; cb.title = "Close"; cb.setAttribute("aria-label", "Close " + title);
+      cb.onclick = () => wmToggleSettings();
+      bar.appendChild(cb);
+    }
+    el.insertBefore(bar, el.firstChild);
+    const rz = document.createElement("div"); rz.className = "rsz"; rz.title = "Drag to resize";
+    el.appendChild(rz);
+    bar.addEventListener("pointerdown", e => wmBeginMove(e, id, false));
+    rz.addEventListener("pointerdown", e => wmBeginResize(e, id, false));
+    el.addEventListener("pointerdown", () => wmFront(id));
+
+    const m = document.createElement("div"); m.className = "mini"; m.id = "m-" + id; m.title = title + " - click ^ or double-click to open";
+    const ph = document.createElement("div"); ph.className = "mph";
+    ph.innerHTML = '<svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet"><rect x="6" y="6" width="88" height="88" fill="none" stroke="currentColor" stroke-width="3"/><text x="50" y="62" text-anchor="middle" font-size="30" fill="currentColor" font-family="monospace">' + abbr + '</text></svg>';
+    const img = new Image(); img.className = "mimg"; img.alt = ""; img.draggable = false; img.style.display = "none";
+    img.onload = () => { img.style.display = ""; ph.style.display = "none"; };   // your own icon replaces the placeholder
+    img.src = "/api/icon/" + WIN_ICON[id] + "?v=" + Date.now();
+    const car = document.createElement("button"); car.className = "mcar"; car.textContent = "^"; car.title = "Open"; car.setAttribute("aria-label", "Open " + title);
+    car.onclick = () => wmRestore(id);
+    const rz2 = document.createElement("div"); rz2.className = "rsz"; rz2.title = "Drag to resize";
+    m.appendChild(ph); m.appendChild(img); m.appendChild(car); m.appendChild(rz2);
+    m.addEventListener("pointerdown", e => wmBeginMove(e, id, true));
+    rz2.addEventListener("pointerdown", e => wmBeginResize(e, id, true));
+    m.addEventListener("dblclick", () => wmRestore(id));
+    desk.appendChild(m);
+    WM.mini[id] = m;
+  });
+}
+
+// ---- settings (config\settings.json) ----
+function wmCleanSettings(raw) {
+  const s = { snap: true, guides: false, social: {} };
+  if (raw && typeof raw === "object") {
+    if (typeof raw.snap === "boolean") s.snap = raw.snap;
+    if (typeof raw.guides === "boolean") s.guides = raw.guides;
+  }
+  SOCIALS.forEach(x => { s.social[x.id] = !(raw && raw.social && typeof raw.social === "object" && raw.social[x.id] === false); });
+  return s;
+}
+function wmApplySettings() {
+  const s = WM.set;
+  $("optSnap").checked = s.snap; $("optGuides").checked = s.guides;
+  SOCIALS.forEach(x => { $("optSocial_" + x.id).checked = s.social[x.id]; });
+  const nav = $("socials"); nav.textContent = "";
+  SOCIALS.forEach(x => {
+    if (!s.social[x.id] || !x.url) return;
+    const a = document.createElement("a"); a.href = x.url; a.target = "_blank"; a.rel = "noopener noreferrer"; a.textContent = "[" + x.label + "]";
+    nav.appendChild(a);
+  });
+  wmGuides();
+}
+function wmSettingChanged() {
+  const s = WM.set;
+  s.snap = $("optSnap").checked; s.guides = $("optGuides").checked;
+  SOCIALS.forEach(x => { s.social[x.id] = $("optSocial_" + x.id).checked; });
+  wmApplySettings();
+  const body = JSON.stringify(s);
+  WM.schain = WM.schain.then(() => fetch("/api/settings", { method: "POST", headers: { "X-ESPdevice": "1", "Content-Type": "application/json" }, body: body }).catch(() => {}));
+}
+
+async function wmInit() {
+  wmBuild();
+  const get = async u => { try { const r = await fetch(u); if (!r.ok) return null; return JSON.parse(await r.text()); } catch (e) { return null; } };
+  const res = await Promise.all([get("/api/layout"), get("/api/settings")]);
+  WM.set = wmCleanSettings(res[1]);
+  WM.L = wmClean(res[0]);
+  wmApplySettings();
+  wmPlaceAll();
+  $("desk").classList.add("ready");
+  window.addEventListener("resize", wmPlaceAll);
+  window.addEventListener("pagehide", wmFlush);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") wmFlush(); });
+}
+)HTMLX";
+
 static const char* HTML_JS2 = R"HTMLX(
 async function selectProfile() { applyState(await api("/api/select", { index: parseInt($("profileSelect").value, 10) })); }
 async function addProfile() {
@@ -2194,43 +2617,8 @@ async function loadArt() {
   } catch (e) {}
 }
 
-// ---- collapsible sections: click a "[ TITLE ]" bar to fold / unfold its box (remembered in this browser) ----
-function setupSections() {
-  let closed = [];
-  try { closed = JSON.parse(localStorage.getItem("espdevice-closed") || "[]"); if (!Array.isArray(closed)) closed = []; } catch (e) { closed = []; }
-  const save = () => {
-    const names = [];
-    document.querySelectorAll(".box.collapsible:not(.open) > h2").forEach(h => names.push(h.dataset.name));
-    try { localStorage.setItem("espdevice-closed", JSON.stringify(names)); } catch (e) {}
-  };
-  document.querySelectorAll(".box").forEach(box => {
-    const h = box.querySelector(":scope > h2");
-    if (!h) return;
-    const name = h.textContent.trim();
-    h.dataset.name = name;
-    const body = document.createElement("div");
-    body.className = "boxbody";
-    while (h.nextSibling) body.appendChild(h.nextSibling); // move everything under the heading into the foldable body
-    box.appendChild(body);
-    const chev = document.createElement("span");
-    chev.className = "chev"; chev.textContent = "v"; chev.setAttribute("aria-hidden", "true");
-    h.insertBefore(chev, h.firstChild);
-    h.setAttribute("role", "button"); h.tabIndex = 0;
-    box.classList.add("collapsible");
-    const setOpen = open => {
-      box.classList.toggle("open", open);
-      h.setAttribute("aria-expanded", open ? "true" : "false");
-      const log = box.querySelector("#log");
-      if (open && log) log.scrollTop = log.scrollHeight; // a hidden log forgets its scroll position
-    };
-    setOpen(closed.indexOf(name) < 0);
-    h.addEventListener("click", () => { setOpen(!box.classList.contains("open")); save(); });
-    h.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); h.click(); } });
-  });
-}
-
 (function init() {
-  setupSections();
+  wmInit().catch(() => { const d = $("desk"); if (d) d.classList.add("ready"); }); // windows (see the WINDOWS section)
   loadTheme();
   loadArt();
   const dl = $("keynames");
@@ -2247,11 +2635,16 @@ function setupSections() {
 
 static std::string WebsiteHtml() {
     std::string s;
-    s.reserve(32768);
+    s.reserve(65536);
     s += HTML_HEAD;
+    s += HTML_CSS_WIN;
     s += HTML_BODY;
     s += HTML_JS1;
     s += HTML_JS_THEME;
+    s += HTML_JS_WM1;
+    s += HTML_JS_WM2;
     s += HTML_JS2;
+    const std::string marker = "@@VER@@", ver = ESP_VERSION;
+    for (size_t p = s.find(marker); p != std::string::npos; p = s.find(marker, p + ver.size())) s.replace(p, marker.size(), ver);
     return s;
 }
