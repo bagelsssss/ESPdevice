@@ -26,7 +26,11 @@ Get the latest build from the [**Releases**](../../releases/latest) page. No Vis
 - `ESPdevice-Setup.exe` is the installer (per-user, no admin prompt). It can also start ESPdevice when you sign in to Windows.
 - `ESPdevice-portable.zip` is just `ESPdevice.exe`. Keep it in a folder you can write to, because it saves your `config\` folder next to itself.
 
-Windows SmartScreen may say "Windows protected your PC" because the installer isn't code-signed. Click **More info**, then **Run anyway**.
+> **Unsigned app:** ESPdevice isn't code-signed (certificates cost money), so Windows
+> SmartScreen may show "Windows protected your PC" the first time you run the installer
+> or `ESPdevice.exe`. Click **More info**, then **Run anyway**. The full source is in
+> this repo and the release files are built by GitHub Actions from it
+> (see `.github/workflows/build.yml`), so you can check or build it yourself.
 
 You still need to build and flash the keypad itself, see [Make your own keypad](#make-your-own-keypad).
 
