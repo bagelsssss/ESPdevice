@@ -23,8 +23,8 @@ Good for gaming (bind keys to whatever your game uses, one profile per game), bu
 
 Get the latest build from the [**Releases**](../../releases/latest) page. No Visual Studio needed.
 
-- `ESPdevice-Setup.exe` is the installer (per-user, no admin prompt). It can also start ESPdevice when you sign in to Windows.
-- `ESPdevice-portable.zip` is just `ESPdevice.exe`. Keep it in a folder you can write to, because it saves your `config\` folder next to itself.
+- `ESPdevice-win-installer.zip` contains the installer, `ESPdevice-Setup.exe` (per-user, no admin prompt). Unzip it, then run it. It can also start ESPdevice when you sign in to Windows.
+- `ESPdevice-win-portable.zip` is just `ESPdevice.exe` (plus the license). Keep it in a folder you can write to, because it saves your `config\` folder next to itself.
 
 > **Unsigned app:** ESPdevice isn't code-signed (certificates cost money), so Windows
 > SmartScreen may show "Windows protected your PC" the first time you run the installer
@@ -140,12 +140,12 @@ The firmware only sends serial bytes: no WiFi, no Bluetooth, nothing else, which
 
 ### 3. Install the Windows app
 
-1. Download `ESPdevice-Setup.exe` from the [Releases](../../releases/latest) page and run it. It installs to `%LocalAppData%\ESPdevice`.
+1. Download `ESPdevice-win-installer.zip` from the [Releases](../../releases/latest) page, unzip it and run `ESPdevice-Setup.exe`. It installs to `%LocalAppData%\ESPdevice`.
 2. Close any older copy first, because two copies would both type every key.
 3. Tick **Start ESPdevice when I sign in to Windows** if you want it to launch quietly at log-in (then you can skip step 4), and finish the installer.
 4. A tray icon appears. Right-click it and choose **Open Settings**, or browse to http://localhost:9191.
 
-Prefer no installer? Unzip `ESPdevice-portable.zip` somewhere permanent (for example `C:\ESPdevice\`) and run `ESPdevice.exe`.
+Prefer no installer? Unzip `ESPdevice-win-portable.zip` somewhere permanent (for example `C:\ESPdevice\`) and run `ESPdevice.exe`.
 
 <details>
 <summary>Build it yourself instead</summary>
