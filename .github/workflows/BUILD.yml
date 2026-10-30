@@ -1,0 +1,73 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # lets the release step attach files when you push a v* tag
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out version
+        id: ver
+        shell: pwsh
+        run: |
+          if ("${{ github.ref }}" -like "refs/tags/v*") { $v = "${{ github.ref_name }}".TrimStart("v") } else { $v = "dev-" + "${{ github.sha }}".Substring(0,7) }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          # the app shows this number next to the credit: write it into the source for tagged builds
+          if ("${{ github.ref }}" -like "refs/tags/v*") { Set-Content -Path app\version.h -Value ('#define ESP_VERSION "' + $v + '"') -Encoding ascii }
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build ESPdevice.exe
+        working-directory: app
+        shell: cmd
+        run: |
+          rc /nologo espdevice.rc
+          cl /nologo /EHsc /std:c++17 /O2 /MT /DUNICODE /D_UNICODE ESPdevice.cpp espdevice.res /link /SUBSYSTEM:WINDOWS /OUT:ESPdevice.exe
+
+      - name: Make sure Inno Setup is available
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          if (-not (Test-Path $iscc)) { throw "Inno Setup not found" }
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DMyAppVersion=${{ steps.ver.outputs.version }}" installer\ESPdevice.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist\portable | Out-Null
+          Copy-Item app\ESPdevice.exe, LICENSE dist\portable\
+          Compress-Archive -Path dist\portable\* -DestinationPath dist\ESPdevice-portable.zip -Force
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ESPdevice-windows
+          path: |
+            dist/ESPdevice-Setup.exe
+            dist/ESPdevice-portable.zip
+
+      - name: Attach to release (tags like v1.0.1)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ESPdevice-Setup.exe
+            dist/ESPdevice-portable.zip
+          generate_release_notes: true
