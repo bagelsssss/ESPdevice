@@ -440,6 +440,51 @@ static void WriteFileAtomic(const fs::path& target, const std::string& content) 
 }
 
 // Caller must hold g_profileMutex.
+// ---- Click counters ------------------------------------------------------
+// The total lives here (not in the page) so presses are counted even when the page is closed.
+// CPS is worked out by the page from the live press events. config\counters.json = {"total":N,"since":unixSeconds}.
+static std::atomic<uint64_t> g_clicksTotal{ 0 }, g_clicksSaved{ 0 };
+static std::atomic<int64_t> g_clicksSince{ 0 };
+static std::mutex g_clicksMx;
+
+static void SaveCounters(bool force) {
+    uint64_t t = g_clicksTotal.load();
+    if (!force && t == g_clicksSaved.load()) return;
+    std::lock_guard<std::mutex> lk(g_clicksMx);
+    std::ostringstream o;
+    o << "{\"total\":" << t << ",\"since\":" << g_clicksSince.load() << "}";
+    WriteFileAtomic(g_configDir / L"counters.json", o.str());
+    g_clicksSaved = t;
+}
+static void LoadCounters() {
+    std::string txt;
+    {
+        std::ifstream f(g_configDir / L"counters.json", std::ios::binary);
+        if (f.is_open()) { std::ostringstream ss; ss << f.rdbuf(); txt = ss.str(); }
+    }
+    auto num = [&](const char* key) -> unsigned long long {
+        size_t p = txt.find(key);
+        if (p == std::string::npos) return 0;
+        p = txt.find(':', p);
+        return p == std::string::npos ? 0 : strtoull(txt.c_str() + p + 1, nullptr, 10);
+    };
+    g_clicksTotal = num("\"total\"");
+    g_clicksSince = (int64_t)num("\"since\"");
+    if (g_clicksSince.load() <= 0) g_clicksSince = (int64_t)time(nullptr);
+    g_clicksSaved = g_clicksTotal.load();
+}
+static void ResetCounters() {
+    g_clicksTotal = 0;
+    g_clicksSince = (int64_t)time(nullptr);
+    SaveCounters(true);
+}
+static void CounterSaverLoop() { // writes the file a few seconds after the number changed, never from the key path
+    while (g_running) {
+        for (int i = 0; i < 50 && g_running; i++) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        SaveCounters(false);
+    }
+}
+
 static void SaveProfilesLocked() {
     WriteFileAtomic(g_profilesPath, ProfilesToJson());
     WriteFileAtomic(g_activeIndexPath, std::to_string(g_activeIndex));
@@ -669,6 +714,7 @@ static void HandleByte(BYTE b, double now, int64_t tRecv) {
             RecordLatency(lat);
         }
         PushEvent(EVT_PRESS, idx, lat, g_cur[idx].text);
+        g_clicksTotal.fetch_add(1, std::memory_order_relaxed); // real presses only (keepalives return above)
     } else {
         if (!g_held[idx]) return;
         uint32_t lat = 0;
@@ -884,6 +930,8 @@ static std::string BuildStateJsonLocked(const std::string& error) {
         << ",\"latAvgUs\":" << avg
         << ",\"latMaxUs\":" << g_latMax.load()
         << ",\"latCount\":" << cnt
+        << ",\"clicksTotal\":" << g_clicksTotal.load()
+        << ",\"clicksSince\":" << g_clicksSince.load()
         << ",\"hasLogo\":" << (g_hasLogo ? "true" : "false")
         << ",\"logoVer\":" << g_logoVer.load()
         << ",\"holdDelayMs\":" << (int)(g_initialDelay * 1000)
@@ -1262,6 +1310,10 @@ static void HandleRequest(SOCKET client) {
         }
         response = HttpResponse("200 OK", "application/json", BuildStateJsonLocked(err));
     }
+    else if (method == "POST" && path == "/api/counters/reset") {
+        ResetCounters();
+        response = HttpResponse("200 OK", "application/json", BuildStateJson());
+    }
     else if (method == "POST" && path == "/api/resetstats") {
         ResetLatencyStats();
         response = HttpResponse("200 OK", "application/json", BuildStateJson());
@@ -1413,6 +1465,7 @@ static void RemoveTrayIcon() {
 static void QuitApp() {
     g_running = false;
     g_evCv.notify_all();
+    SaveCounters(false);
     for (int i = 0; i < 40 && g_anySent.load(); i++) std::this_thread::sleep_for(std::chrono::milliseconds(10));
     RemoveTrayIcon();
     ExitProcess(0);
@@ -1443,6 +1496,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     }
 
     InitPaths();
+    LoadCounters();
     SetUnhandledExceptionFilter(CrashFilter);
     InitClock();
     for (int i = 0; i < NUM_KEYS; i++) { g_held[i] = g_sent[i] = false; g_nextRepeat[i] = -1; g_lastSeen[i] = 0; g_heldView[i] = false; }
@@ -1476,6 +1530,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
 
     std::thread([]() { RunGuarded("device", true, DeviceThread); }).detach();
     std::thread([]() { RunGuarded("http-accept", true, AcceptLoop); }).detach();
+    std::thread([]() { RunGuarded("counters", true, CounterSaverLoop); }).detach();
 
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0)) {
@@ -1484,6 +1539,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     }
 
     g_running = false;
+    SaveCounters(false);
     RemoveTrayIcon();
     timeEndPeriod(1);
     return 0;
@@ -1613,16 +1669,19 @@ html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg);
 #desk { position: fixed; left: 0; top: 0; right: 0; bottom: 0; z-index: 2; pointer-events: none; visibility: hidden; }
 #desk.ready { visibility: visible; }
 #desk > * { pointer-events: auto; }
-.win { position: absolute; display: flex; flex-direction: column; background: var(--c-bg); border: 1px solid var(--c-border); min-width: 0; min-height: 0; overflow: hidden; }
+.win { position: absolute; display: flex; flex-direction: column; background: var(--c-bg); border: 1px solid var(--c-border); min-width: 0; min-height: 0; overflow: hidden; padding-bottom: 16px; }
 .wbar { flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 8px 4px 8px; cursor: move; user-select: none; -webkit-user-select: none; touch-action: none; }
 .wbar h2 { margin: 0; font-size: 1em; font-weight: normal; color: var(--c-heading); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .win.front .wbar h2 { color: var(--c-fg); }
 .grip { flex: none; width: 1.5em; height: 1.5em; border: 1px solid var(--c-border); display: flex; align-items: center; justify-content: center; font-size: 0.8em; line-height: 1; color: var(--c-dim); }
 .wbtn { flex: none; width: 1.7em; height: 1.7em; padding: 0; display: flex; align-items: center; justify-content: center; line-height: 1; cursor: pointer; }
-.wbody { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 12px 20px 12px; scrollbar-width: thin; scrollbar-color: var(--c-border) var(--c-bg); }
+.wbody { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 12px 6px 12px; scrollbar-width: thin; scrollbar-color: var(--c-border) var(--c-bg); }
 .rsz { position: absolute; left: 0; bottom: 0; width: 16px; height: 16px; cursor: nesw-resize; touch-action: none; z-index: 2; }
 .rsz::after { content: ""; position: absolute; left: 3px; bottom: 3px; width: 8px; height: 8px; border-left: 2px solid var(--c-dim); border-bottom: 2px solid var(--c-dim); }
 .rsz:hover::after { border-color: var(--c-fg); }
+.rsz.r { left: auto; right: 0; cursor: nwse-resize; }
+.rsz.r::after { left: auto; right: 3px; border-left: 0; border-right: 2px solid var(--c-dim); }
+.wicon { flex: none; width: 22px; height: 22px; object-fit: contain; pointer-events: none; }
 /* minimized: a small icon window */
 .mini { position: absolute; display: none; background: var(--c-bg); border: 1px solid var(--c-border); cursor: move; touch-action: none; user-select: none; -webkit-user-select: none; overflow: hidden; }
 .mph, .mimg { position: absolute; left: 8px; top: 8px; width: calc(100% - 16px); height: calc(100% - 16px); pointer-events: none; }
@@ -1631,8 +1690,13 @@ html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg);
 .mcar { position: absolute; left: 3px; top: 3px; width: 18px; height: 18px; min-width: 0; padding: 0; font-size: 12px; line-height: 1; display: flex; align-items: center; justify-content: center; z-index: 3; }
 /* corner widgets */
 .gear { position: fixed; right: 16px; top: 16px; z-index: 3; }
+.gear img { display: block; width: 24px; height: 24px; object-fit: contain; pointer-events: none; }
+.gear.hasicon { padding: 3px; background: transparent; border-color: transparent; }
+.gear.hasicon:hover { background: var(--c-btn-hover-bg); border-color: var(--c-btn-border); }
+.divider { position: fixed; left: 0; right: 0; bottom: 52px; height: 1px; background: var(--c-border); z-index: 1; pointer-events: none; }
 .socials { position: fixed; left: 16px; bottom: 12px; z-index: 1; display: flex; gap: 14px; }
-.socials a { color: var(--c-dim); text-decoration: none; }
+.socials a { color: var(--c-dim); text-decoration: none; display: flex; align-items: center; }
+.sicon { display: block; width: 22px; height: 22px; object-fit: contain; }
 .socials a:hover { color: var(--c-fg); text-decoration: underline; }
 .br { position: fixed; right: 16px; bottom: 12px; z-index: 1; text-align: right; }
 .credit { opacity: 0.5; color: var(--c-credit); }
@@ -1643,6 +1707,9 @@ html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg);
 .sncell.on { background: var(--c-btn-hover-bg); border-color: var(--c-btn-hover-bg); }
 #snapprev { position: fixed; z-index: 8999; display: none; pointer-events: none; border: 2px solid var(--c-fg); background: var(--c-fg); opacity: 0.16; }
 /* per-window tweaks */
+.vis { display: flex; flex-wrap: wrap; gap: 12px 28px; align-items: flex-start; }
+.counters { display: grid; gap: 6px; padding-top: 4px; min-width: 110px; color: var(--c-stat-label); }
+.counters div { white-space: nowrap; } .counters span { color: var(--c-stat-value); }
 #w-debugger .wbody { display: flex; flex-direction: column; }
 #w-debugger .wbody > * { flex: none; }
 #w-debugger #log { flex: 1 1 90px; height: auto; min-height: 70px; }
@@ -1655,6 +1722,7 @@ html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg);
 
 static const char* HTML_BODY = R"HTMLX(<body>
 <div id="snapfly"></div><div id="snapprev"></div>
+<div class="divider" id="divider"></div>
 <div class="hdr">
 <div class="hero">
 <div class="logo">
@@ -1688,7 +1756,13 @@ static const char* HTML_BODY = R"HTMLX(<body>
 </div></section>
 
 <section class="win" id="w-visualizer" data-title="VISUALIZER" data-abbr="VIS"><div class="wbody">
-<div class="keys" id="keys"></div>
+<div class="vis">
+  <div class="keys" id="keys"></div>
+  <div class="counters">
+    <div>CPS: <span id="cCps">0</span></div>
+    <div id="cTotalRow">Total: <span id="cTotal">0</span></div>
+  </div>
+</div>
 </div></section>
 
 <section class="win" id="w-keybinds" data-title="KEYBINDS" data-abbr="KEY"><div class="wbody">
@@ -1747,6 +1821,9 @@ static const char* HTML_BODY = R"HTMLX(<body>
 <div class="setgrp">WINDOWS</div>
 <label class="opt"><input type="checkbox" id="optSnap" onchange="wmSettingChanged()"> snap layouts: drag a window to the top of the page to pick a zone</label>
 <div class="row"><button onclick="resetLayout()">RESET WINDOW LAYOUT</button></div>
+<label class="opt"><input type="checkbox" id="optGearTop" onchange="wmSettingChanged()"> keep the settings button on top of the windows</label>
+<div class="setgrp">COUNTERS</div>
+<div class="row"><button onclick="resetCounters()">RESET CPS / TOTAL</button></div>
 <div class="setgrp">SOCIAL LINKS (bottom left)</div>
 <label class="opt"><input type="checkbox" id="optSocial_github" onchange="wmSettingChanged()"> GitHub</label>
 <label class="opt"><input type="checkbox" id="optSocial_youtube" onchange="wmSettingChanged()"> YouTube</label>
@@ -1872,6 +1949,7 @@ function applyState(st) {
   $("sDelay").textContent = st.holdDelayMs + " ms";
   $("sRepeat").textContent = st.repeatMs + " ms";
   $("err").textContent = st.error ? ("ERROR: " + st.error) : "";
+  if (typeof st.clicksTotal === "number") syncTotal(st.clicksTotal, st.clicksSince);
 }
 )HTMLX";
 
@@ -2049,13 +2127,13 @@ const SNAP_LAYOUTS = [
   { id: "l2r",  cells: [[0, 0, 0.5, 0.5], [0, 0.5, 0.5, 0.5], [0.5, 0, 0.5, 1]] },
   { id: "q4",   cells: [[0, 0, 0.5, 0.5], [0.5, 0, 0.5, 0.5], [0, 0.5, 0.5, 0.5], [0.5, 0.5, 0.5, 0.5]] }
 ];
-const WORK_TOP = 44, WORK_BOTTOM = 40, SNAP_EDGE = 8, SNAP_GAP = 8; // snapped windows leave the top (settings button) and bottom (links, status) strips free
+const WORK_TOP = 44, WORK_BOTTOM = 52, SNAP_EDGE = 8, SNAP_GAP = 8; // snapped windows leave the top (settings button) and bottom (links, status) strips free
 const MIN_W = 200, MIN_H = 90, MINI_MIN = 36, MINI_W = 88, MINI_H = 64;
 const SOCIALS = [
-  { id: "github",  label: "github",  url: "https://github.com/bagelsssss" },
-  { id: "youtube", label: "youtube", url: "https://www.youtube.com/@bagelsssss" },
-  { id: "tiktok",  label: "tiktok",  url: "https://www.tiktok.com/@bagel.sssss" },
-  { id: "discord", label: "discord", url: "https://discord.com/users/920728577622835251" }
+  { id: "github",  label: "github",  icon: "Github",  url: "https://github.com/bagelsssss" },
+  { id: "youtube", label: "youtube", icon: "Youtube", url: "https://www.youtube.com/@bagelsssss" },
+  { id: "tiktok",  label: "tiktok",  icon: "Tiktok",  url: "https://www.tiktok.com/@bagel.sssss" },
+  { id: "discord", label: "discord", icon: "Discord", url: "https://discord.com/users/920728577622835251" }
 ];
 const WM = { L: null, set: null, el: {}, mini: {}, timer: 0, chain: Promise.resolve(), schain: Promise.resolve(), fly: null };
 
@@ -2272,7 +2350,7 @@ function wmBeginMove(ev, id, isMini) {
   grab.addEventListener("pointermove", move); grab.addEventListener("pointerup", end); grab.addEventListener("pointercancel", end);
 }
 
-function wmBeginResize(ev, id, isMini) {
+function wmBeginResize(ev, id, isMini, side) {
   if (ev.button !== 0) return;
   ev.stopPropagation();
   const F = wmFrameOf(id, isMini), minW = isMini ? MINI_MIN : MIN_W, minH = isMini ? MINI_MIN : MIN_H;
@@ -2285,9 +2363,15 @@ function wmBeginResize(ev, id, isMini) {
     const dx = e.clientX - sx, dy = e.clientY - sy;
     if (!moved && Math.abs(dx) + Math.abs(dy) < 2) return;
     moved = true;
-    const nx = Math.max(Math.min(base.x + dx, right - minW), Math.min(base.x, 0));   // the right edge stays put
     const nb = Math.min(Math.max(base.y + base.h + dy, base.y + minH), wmVH());
-    F.x = nx; F.w = right - nx; F.y = base.y; F.h = nb - base.y;
+    if (side === "r") {   // bottom-right corner: the left edge stays put
+      const nr = Math.min(Math.max(right + dx, base.x + minW), Math.max(wmVW(), right));
+      F.x = base.x; F.w = nr - base.x;
+    } else {              // bottom-left corner: the right edge stays put
+      const nx = Math.max(Math.min(base.x + dx, right - minW), Math.min(base.x, 0));
+      F.x = nx; F.w = right - nx;
+    }
+    F.y = base.y; F.h = nb - base.y;
     F.z = null; F.pw = 0; F.ph = 0;
     wmPlace(id);
   };
@@ -2343,6 +2427,10 @@ function wmBuild() {
     mb.onclick = () => wmMinimize(id);
     const h = document.createElement("h2"); h.textContent = "[ " + title + " ]";
     bar.appendChild(grip); bar.appendChild(mb); bar.appendChild(h);
+    const wi = new Image(); wi.className = "wicon"; wi.alt = ""; wi.draggable = false; wi.style.display = "none";
+    wi.onload = () => { wi.style.display = ""; };                         // shown only once your icon file exists
+    wi.src = "/api/icon/" + WIN_ICON[id] + "?v=" + Date.now();
+    bar.appendChild(wi);
     if (el.dataset.closable) {
       const cb = document.createElement("button"); cb.className = "wbtn"; cb.textContent = "x"; cb.title = "Close"; cb.setAttribute("aria-label", "Close " + title);
       cb.onclick = () => wmToggleSettings();
@@ -2350,9 +2438,11 @@ function wmBuild() {
     }
     el.insertBefore(bar, el.firstChild);
     const rz = document.createElement("div"); rz.className = "rsz"; rz.title = "Drag to resize";
-    el.appendChild(rz);
+    const rzr = document.createElement("div"); rzr.className = "rsz r"; rzr.title = "Drag to resize";
+    el.appendChild(rz); el.appendChild(rzr);
     bar.addEventListener("pointerdown", e => wmBeginMove(e, id, false));
-    rz.addEventListener("pointerdown", e => wmBeginResize(e, id, false));
+    rz.addEventListener("pointerdown", e => wmBeginResize(e, id, false, "l"));
+    rzr.addEventListener("pointerdown", e => wmBeginResize(e, id, false, "r"));
     el.addEventListener("pointerdown", () => wmFront(id));
 
     const m = document.createElement("div"); m.className = "mini"; m.id = "m-" + id; m.title = title + " - click ^ or double-click to open";
@@ -2364,9 +2454,11 @@ function wmBuild() {
     const car = document.createElement("button"); car.className = "mcar"; car.textContent = "^"; car.title = "Open"; car.setAttribute("aria-label", "Open " + title);
     car.onclick = () => wmRestore(id);
     const rz2 = document.createElement("div"); rz2.className = "rsz"; rz2.title = "Drag to resize";
-    m.appendChild(ph); m.appendChild(img); m.appendChild(car); m.appendChild(rz2);
+    const rz2r = document.createElement("div"); rz2r.className = "rsz r"; rz2r.title = "Drag to resize";
+    m.appendChild(ph); m.appendChild(img); m.appendChild(car); m.appendChild(rz2); m.appendChild(rz2r);
     m.addEventListener("pointerdown", e => wmBeginMove(e, id, true));
-    rz2.addEventListener("pointerdown", e => wmBeginResize(e, id, true));
+    rz2.addEventListener("pointerdown", e => wmBeginResize(e, id, true, "l"));
+    rz2r.addEventListener("pointerdown", e => wmBeginResize(e, id, true, "r"));
     m.addEventListener("dblclick", () => wmRestore(id));
     desk.appendChild(m);
     WM.mini[id] = m;
@@ -2375,25 +2467,34 @@ function wmBuild() {
 
 // ---- settings (config\settings.json) ----
 function wmCleanSettings(raw) {
-  const s = { snap: true, social: {} };
-  if (raw && typeof raw === "object" && typeof raw.snap === "boolean") s.snap = raw.snap;
+  const s = { snap: true, gearTop: true, social: {} };
+  if (raw && typeof raw === "object") {
+    if (typeof raw.snap === "boolean") s.snap = raw.snap;
+    if (typeof raw.gearTop === "boolean") s.gearTop = raw.gearTop;
+  }
   SOCIALS.forEach(x => { s.social[x.id] = !(raw && raw.social && typeof raw.social === "object" && raw.social[x.id] === false); });
   return s;
 }
 function wmApplySettings() {
   const s = WM.set;
-  $("optSnap").checked = s.snap;
+  $("optSnap").checked = s.snap; $("optGearTop").checked = s.gearTop;
+  $("gearBtn").style.zIndex = s.gearTop ? "3" : "1";   // 3 = above the windows, 1 = windows can cover it
   SOCIALS.forEach(x => { $("optSocial_" + x.id).checked = s.social[x.id]; });
   const nav = $("socials"); nav.textContent = "";
   SOCIALS.forEach(x => {
     if (!s.social[x.id] || !x.url) return;
-    const a = document.createElement("a"); a.href = x.url; a.target = "_blank"; a.rel = "noopener noreferrer"; a.textContent = "[" + x.label + "]";
+    const a = document.createElement("a"); a.href = x.url; a.target = "_blank"; a.rel = "noopener noreferrer"; a.title = x.label;
+    const sp = document.createElement("span"); sp.textContent = "[" + x.label + "]";
+    const im = new Image(); im.className = "sicon"; im.alt = x.label; im.style.display = "none";
+    im.onload = () => { im.style.display = ""; sp.style.display = "none"; };   // your icon (config\icons\Github_icon.png ...) replaces the text
+    im.src = "/api/icon/" + x.icon + "?v=" + Date.now();
+    a.appendChild(im); a.appendChild(sp);
     nav.appendChild(a);
   });
 }
 function wmSettingChanged() {
   const s = WM.set;
-  s.snap = $("optSnap").checked;
+  s.snap = $("optSnap").checked; s.gearTop = $("optGearTop").checked;
   SOCIALS.forEach(x => { s.social[x.id] = $("optSocial_" + x.id).checked; });
   wmApplySettings();
   const body = JSON.stringify(s);
@@ -2407,6 +2508,10 @@ async function wmInit() {
   WM.set = wmCleanSettings(res[1]);
   WM.L = wmClean(res[0]);
   wmApplySettings();
+  $("divider").style.bottom = WORK_BOTTOM + "px";   // snap zones end at this line
+  const gi = new Image(); gi.alt = ""; gi.draggable = false;
+  gi.onload = () => { const g = $("gearBtn"); g.textContent = ""; g.appendChild(gi); g.classList.add("hasicon"); };   // Settings_icon.png replaces the text
+  gi.src = "/api/icon/Settings?v=" + Date.now();
   wmPlaceAll();
   $("desk").classList.add("ready");
   window.addEventListener("resize", wmPlaceAll);
@@ -2465,7 +2570,7 @@ function onEvent(v) {
   if (v.y === "S") { held = v.held; paintKeys(); return; }
   const t = (v.t / 1e6).toFixed(3).padStart(9, " ");
   const key = "KEY" + (v.k + 1);
-  if (v.y === "P") { held[v.k] = true; paintKeys(); logLine("P", "[" + t + "s] " + key + " DOWN  " + v.m.padEnd(14, " ") + (v.l ? v.l + " us" : "(paused)")); }
+  if (v.y === "P") { if (performance.now() > replayUntil) cpsHit(); held[v.k] = true; paintKeys(); logLine("P", "[" + t + "s] " + key + " DOWN  " + v.m.padEnd(14, " ") + (v.l ? v.l + " us" : "(paused)")); }
   else if (v.y === "R") { held[v.k] = false; paintKeys(); logLine("R", "[" + t + "s] " + key + " UP    " + v.m); }
   else if (v.y === "X") { held[v.k] = false; paintKeys(); logLine("X", "[" + t + "s] " + key + " TIMEOUT " + v.m); }
   else if (v.y === "C") { logLine("C", "[" + t + "s] CONNECTED " + v.m); }
@@ -2475,6 +2580,7 @@ function onEvent(v) {
 
 function startStream() {
   const es = new EventSource("/events");
+  es.onopen = () => { replayUntil = performance.now() + 500; }; // the server replays recent events on connect: don't count those as new presses
   es.onmessage = e => { try { onEvent(JSON.parse(e.data)); } catch (x) {} };
   es.onerror = () => { $("status").textContent = "service offline - retrying..."; };
 }
@@ -2657,6 +2763,26 @@ async function loadArt() {
     el.style.fontSize = (10 * Math.min(ART_MAX_W / w, ART_MAX_H / h)).toFixed(2) + "px";
   } catch (e) {}
 }
+
+// ---- CPS (presses in the last second) and Total (all presses, counted by the app and saved across restarts) ----
+let replayUntil = 0, cpsTimes = [], cTotal = 0, cSrv = -1;
+function paintCounters() {
+  const now = performance.now();
+  while (cpsTimes.length && now - cpsTimes[0] > 1000) cpsTimes.shift();
+  const c = $("cCps"), t = $("cTotal"), cs = String(cpsTimes.length), ts = cTotal.toLocaleString("en-US");
+  if (c.textContent !== cs) c.textContent = cs;
+  if (t.textContent !== ts) t.textContent = ts;
+}
+function cpsHit() { cpsTimes.push(performance.now()); cTotal++; paintCounters(); }
+function syncTotal(total, since) {
+  if (total !== cSrv) { cSrv = total; cTotal = total; paintCounters(); }
+  if (since > 0) $("cTotalRow").title = "since " + new Date(since * 1000).toLocaleDateString();
+}
+async function resetCounters() {
+  if (!confirm("Reset the CPS and Total counters to zero?")) return;
+  cpsTimes = []; applyState(await api("/api/counters/reset", {}));
+}
+setInterval(paintCounters, 100);
 
 (function init() {
   wmInit().catch(() => { const d = $("desk"); if (d) d.classList.add("ready"); }); // windows (see the WINDOWS section)

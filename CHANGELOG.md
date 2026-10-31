@@ -9,6 +9,12 @@
 - Social links (GitHub, YouTube, TikTok, Discord) in the bottom-left corner.
 - The connection status moved to the bottom-right corner, above the credit, which now reads "made by bagelings, assisted by claude" with the version number beside it. The release build writes the version from the git tag into `app/version.h`.
 - Icons for minimized windows can be dropped into `config\icons\` (for example `Profile_icon.png`); placeholders are shown until then.
+- A divider line across the page above the links/status: snap zones stop there.
+- A second resize handle in the bottom-right corner of every window and icon window.
+- Each window's icon is shown at the right end of its title bar when the icon file exists.
+- The settings button becomes an icon (`Settings_icon.png`, text until it exists) and stays on top of the windows; this can be turned off in SETTINGS.
+- Social links use `Github_icon.png`, `Youtube_icon.png`, `Tiktok_icon.png`, `Discord_icon.png` when present.
+- Visualizer counters: **CPS** and **Total**. The total is counted by the app (works with the page closed), saved in `config\counters.json`, and can be reset in SETTINGS.
 - Debugger log now grows and shrinks with its window.
 
 ## 1.0.x
