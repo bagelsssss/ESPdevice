@@ -1608,7 +1608,7 @@ static const char* HTML_CSS_WIN = R"HTMLX(/* ===== layout: a fixed header, float
 html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg); color: var(--c-fg); font-family: var(--font); font-size: var(--size); }
 .hdr { position: fixed; left: 16px; top: 16px; z-index: 1; max-width: 60vw; }
 .hero { display: flex; align-items: center; gap: 20px; margin: 0 0 8px 0; }
-.status { margin: 0; color: var(--c-status); }
+.status { margin: 0 0 2px 0; color: var(--c-status); }
 /* windows live in #desk (pointer events pass through the empty parts of it) */
 #desk { position: fixed; left: 0; top: 0; right: 0; bottom: 0; z-index: 2; pointer-events: none; visibility: hidden; }
 #desk.ready { visibility: visible; }
@@ -1628,16 +1628,20 @@ html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg);
 .mph, .mimg { position: absolute; left: 8px; top: 8px; width: calc(100% - 16px); height: calc(100% - 16px); pointer-events: none; }
 .mph { color: var(--c-fg); } .mph svg { display: block; width: 100%; height: 100%; }
 .mimg { object-fit: contain; }
-.mcar { position: absolute; left: 2px; top: 2px; width: 18px; height: 18px; font-size: 12px; z-index: 3; }
+.mcar { position: absolute; left: 3px; top: 3px; width: 18px; height: 18px; min-width: 0; padding: 0; font-size: 12px; line-height: 1; display: flex; align-items: center; justify-content: center; z-index: 3; }
 /* corner widgets */
 .gear { position: fixed; right: 16px; top: 16px; z-index: 3; }
 .socials { position: fixed; left: 16px; bottom: 12px; z-index: 1; display: flex; gap: 14px; }
 .socials a { color: var(--c-dim); text-decoration: none; }
 .socials a:hover { color: var(--c-fg); text-decoration: underline; }
-.credit { position: fixed; right: 16px; bottom: 12px; z-index: 1; text-align: right; opacity: 0.5; color: var(--c-credit); }
-/* snap guides: always invisible unless "show snap guides" is switched on in SETTINGS */
-.guide { position: fixed; z-index: 1; pointer-events: none; display: none; border: 0 dashed #d00000; }
-.gv { top: 0; bottom: 0; border-left-width: 1px; } .gh { left: 0; right: 0; border-top-width: 1px; }
+.br { position: fixed; right: 16px; bottom: 12px; z-index: 1; text-align: right; }
+.credit { opacity: 0.5; color: var(--c-credit); }
+/* snap layouts flyout (Windows 11 style): appears at the top while a window is dragged there */
+#snapfly { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 9000; display: none; gap: 10px; padding: 8px; max-width: calc(100vw - 16px); overflow: hidden; background: var(--c-bg); border: 1px solid var(--c-border); }
+.snlay { position: relative; flex: none; width: 78px; height: 48px; }
+.sncell { position: absolute; border: 1px solid var(--c-border); background: var(--c-bg); }
+.sncell.on { background: var(--c-btn-hover-bg); border-color: var(--c-btn-hover-bg); }
+#snapprev { position: fixed; z-index: 8999; display: none; pointer-events: none; border: 2px solid var(--c-fg); background: var(--c-fg); opacity: 0.16; }
 /* per-window tweaks */
 #w-debugger .wbody { display: flex; flex-direction: column; }
 #w-debugger .wbody > * { flex: none; }
@@ -1650,7 +1654,7 @@ html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg);
 )HTMLX";
 
 static const char* HTML_BODY = R"HTMLX(<body>
-<div class="guide gv" id="gV"></div><div class="guide gh" id="gH25"></div><div class="guide gh" id="gH50"></div><div class="guide gh" id="gH75"></div>
+<div id="snapfly"></div><div id="snapprev"></div>
 <div class="hdr">
 <div class="hero">
 <div class="logo">
@@ -1668,7 +1672,6 @@ static const char* HTML_BODY = R"HTMLX(<body>
 </div>
 <h1 class="brand">ESPdevice<span class="cur">_</span></h1>
 </div>
-<p class="status" id="status">connecting to service...</p>
 </div>
 <button class="gear" id="gearBtn" onclick="wmToggleSettings()" title="Open / close the settings window">[ SETTINGS ]</button>
 
@@ -1742,8 +1745,7 @@ static const char* HTML_BODY = R"HTMLX(<body>
 
 <section class="win" id="w-settings" data-title="SETTINGS" data-abbr="SET" data-closable="1"><div class="wbody">
 <div class="setgrp">WINDOWS</div>
-<label class="opt"><input type="checkbox" id="optSnap" onchange="wmSettingChanged()"> snap windows to the guide lines (hold ALT while dragging to skip)</label>
-<label class="opt"><input type="checkbox" id="optGuides" onchange="wmSettingChanged()"> show the snap guide lines (off = invisible)</label>
+<label class="opt"><input type="checkbox" id="optSnap" onchange="wmSettingChanged()"> snap layouts: drag a window to the top of the page to pick a zone</label>
 <div class="row"><button onclick="resetLayout()">RESET WINDOW LAYOUT</button></div>
 <div class="setgrp">SOCIAL LINKS (bottom left)</div>
 <label class="opt"><input type="checkbox" id="optSocial_github" onchange="wmSettingChanged()"> GitHub</label>
@@ -1755,7 +1757,10 @@ static const char* HTML_BODY = R"HTMLX(<body>
 
 </div>
 <nav class="socials" id="socials"></nav>
+<div class="br">
+<p class="status" id="status">connecting to service...</p>
 <div class="credit">made by bagelings, assisted by claude &middot; v@@VER@@</div>
+</div>
 )HTMLX";
 
 static const char* HTML_JS1 = R"HTMLX(<script>
@@ -1850,8 +1855,7 @@ function applyState(st) {
   held = st.keyHeld;
   paintKeys();
 
-  let line = st.version + "  |  ";
-  line += st.connected ? ("CONNECTED " + st.port) : "NO KEYPAD";
+  let line = st.connected ? ("CONNECTED " + st.port) : "NO KEYPAD";
   line += st.paused ? "  |  PAUSED" : "  |  ACTIVE";
   $("status").textContent = line;
   $("pauseBtn").textContent = st.paused ? "RESUME" : "PAUSE";
@@ -2029,40 +2033,58 @@ async function loadTheme() {
 
 static const char* HTML_JS_WM1 = R"HTMLX(
 // ================= WINDOWS (v1.1) =================
-// Every section is a floating window: drag by the title bar, resize from the bottom-left corner, minimize with "v"
-// (it becomes a small icon window; "^" opens it again). Positions, sizes, minimized state, stacking order and snaps
-// are saved to config\layout.json. Snap guides are invisible: one vertical line (centre) and three horizontal ones.
+// Every section is a floating window: drag it by the title bar (freeform, nothing snaps), resize from the bottom-left
+// corner, minimize with "v" (it becomes a small icon window; "^" opens it again). Drag a window to the top of the page
+// to get the snap layouts (like Windows 11): pick a zone and only that window snaps into it.
+// Positions, sizes, minimized state, stacking order and snap zones are saved to config\layout.json.
 const WIN_IDS = ["profile", "visualizer", "keybinds", "service", "debugger", "theme", "settings"];
 const WIN_ICON = { profile: "Profile", visualizer: "Visualizer", keybinds: "Keybinds", service: "Service", debugger: "Debugger", theme: "Theme", settings: "Settings" }; // config\icons\<Name>_icon.png
-const GUIDE_X = { v: 0.5 };
-const GUIDE_Y = { h25: 0.25, h50: 0.5, h75: 0.75 };
-const SNAP_PX = 8, MIN_W = 200, MIN_H = 90, MINI_MIN = 36, MINI_W = 88, MINI_H = 64;
+// cells = [x, y, w, h] as fractions of the work area (the page minus the top and bottom strips)
+const SNAP_LAYOUTS = [
+  { id: "h2",   cells: [[0, 0, 0.5, 1], [0.5, 0, 0.5, 1]] },
+  { id: "w21",  cells: [[0, 0, 2 / 3, 1], [2 / 3, 0, 1 / 3, 1]] },
+  { id: "c3",   cells: [[0, 0, 1 / 3, 1], [1 / 3, 0, 1 / 3, 1], [2 / 3, 0, 1 / 3, 1]] },
+  { id: "c121", cells: [[0, 0, 0.25, 1], [0.25, 0, 0.5, 1], [0.75, 0, 0.25, 1]] },
+  { id: "lr2",  cells: [[0, 0, 0.5, 1], [0.5, 0, 0.5, 0.5], [0.5, 0.5, 0.5, 0.5]] },
+  { id: "l2r",  cells: [[0, 0, 0.5, 0.5], [0, 0.5, 0.5, 0.5], [0.5, 0, 0.5, 1]] },
+  { id: "q4",   cells: [[0, 0, 0.5, 0.5], [0.5, 0, 0.5, 0.5], [0, 0.5, 0.5, 0.5], [0.5, 0.5, 0.5, 0.5]] }
+];
+const WORK_TOP = 44, WORK_BOTTOM = 40, SNAP_EDGE = 8, SNAP_GAP = 8; // snapped windows leave the top (settings button) and bottom (links, status) strips free
+const MIN_W = 200, MIN_H = 90, MINI_MIN = 36, MINI_W = 88, MINI_H = 64;
 const SOCIALS = [
   { id: "github",  label: "github",  url: "https://github.com/bagelsssss" },
   { id: "youtube", label: "youtube", url: "https://www.youtube.com/@bagelsssss" },
   { id: "tiktok",  label: "tiktok",  url: "https://www.tiktok.com/@bagel.sssss" },
   { id: "discord", label: "discord", url: "https://discord.com/users/920728577622835251" }
 ];
-const WM = { L: null, set: null, el: {}, mini: {}, timer: 0, chain: Promise.resolve(), schain: Promise.resolve() };
+const WM = { L: null, set: null, el: {}, mini: {}, timer: 0, chain: Promise.resolve(), schain: Promise.resolve(), fly: null };
 
 const has = (o, k) => typeof k === "string" && Object.prototype.hasOwnProperty.call(o, k);
 const wmNum = (v, d) => (typeof v === "number" && isFinite(v) && Math.abs(v) < 100000) ? Math.round(v) : d;
 function wmVW() { return document.documentElement.clientWidth; }
 function wmVH() { return document.documentElement.clientHeight; }
-const gxPx = k => Math.round(wmVW() * GUIDE_X[k]);
-const gyPx = k => Math.round(wmVH() * GUIDE_Y[k]);
 
-// ---- model: { order:[ids bottom..top], win:{ id:{ n:frame, m:frame, min, open } } }, frame = { x, y, w, h, sn:{l,r,t,b}, p } ----
+// "h2:1" = layout h2, zone 1 -> the rectangle it covers right now (it follows the browser window's size)
+function wmZoneRect(zid) {
+  const p = String(zid).split(":"), lay = SNAP_LAYOUTS.find(l => l.id === p[0]), c = lay && lay.cells[parseInt(p[1], 10)];
+  if (!c || !/^\d$/.test(p[1] || "")) return null;
+  const vw = wmVW(), vh = wmVH(), wh = Math.max(100, vh - WORK_TOP - WORK_BOTTOM), g = SNAP_GAP / 2;
+  const x0 = c[0], y0 = c[1], x1 = c[0] + c[2], y1 = c[1] + c[3];
+  const L = Math.round(x0 * vw) + (x0 < 0.001 ? SNAP_EDGE : g), R = Math.round(x1 * vw) - (x1 > 0.999 ? SNAP_EDGE : g);
+  const T = WORK_TOP + Math.round(y0 * wh) + (y0 < 0.001 ? 0 : g), B = WORK_TOP + Math.round(y1 * wh) - (y1 > 0.999 ? 0 : g);
+  return { x: L, y: T, w: R - L, h: B - T };
+}
+
+// ---- model: { order:[ids bottom..top], win:{ id:{ n:frame, m:frame, min, open } } }, frame = { x, y, w, h, z, pw, ph } ----
+// z = snap zone ("layout:cell") or null; pw/ph = the size before it was snapped (restored when you drag it out)
 function wmCleanFrame(f, d, minW, minH) {
   f = (f && typeof f === "object") ? f : {};
-  const sn = {};
-  if (f.sn && typeof f.sn === "object") {
-    if (has(GUIDE_X, f.sn.l)) sn.l = f.sn.l;
-    if (has(GUIDE_X, f.sn.r)) sn.r = f.sn.r;
-    if (has(GUIDE_Y, f.sn.t)) sn.t = f.sn.t;
-    if (has(GUIDE_Y, f.sn.b)) sn.b = f.sn.b;
-  }
-  return { x: wmNum(f.x, d.x), y: wmNum(f.y, d.y), w: Math.max(minW, wmNum(f.w, d.w)), h: Math.max(minH, wmNum(f.h, d.h)), sn: sn, p: !!f.p };
+  const pw = wmNum(f.pw, 0), ph = wmNum(f.ph, 0);
+  return {
+    x: wmNum(f.x, d.x), y: wmNum(f.y, d.y), w: Math.max(minW, wmNum(f.w, d.w)), h: Math.max(minH, wmNum(f.h, d.h)),
+    z: (typeof f.z === "string" && wmZoneRect(f.z)) ? f.z : null,
+    pw: (pw > 0 && ph > 0) ? Math.max(minW, pw) : 0, ph: (pw > 0 && ph > 0) ? Math.max(minH, ph) : 0
+  };
 }
 
 function wmDefaults() {
@@ -2070,30 +2092,30 @@ function wmDefaults() {
   const hb = document.querySelector(".hdr").getBoundingClientRect();
   const colW = Math.max(MIN_W, Math.min(580, Math.floor((vw - 48) / 2)));
   const cols = [
-    { x: 16, y: Math.max(Math.ceil(hb.bottom), 176) + 8, ids: ["profile", "visualizer", "keybinds", "service"] },
+    { x: 16, y: Math.max(Math.ceil(hb.bottom), 150) + 8, ids: ["profile", "visualizer", "keybinds", "service"] },
     { x: Math.max(16, Math.min(16 + colW + 16, vw - colW - 16)), y: 56, ids: ["debugger", "theme"] }
   ];
   const H = { profile: 110, visualizer: 150, keybinds: 290, service: 90, debugger: 520, theme: 500, settings: 400 };
   const L = { v: 1, order: WIN_IDS.slice(), win: {} };
-  const mk = (id, x, y, w, h, open) => ({
-    n: { x: x, y: y, w: w, h: h, sn: {}, p: false },
-    m: { x: x, y: y, w: MINI_W, h: MINI_H, sn: {}, p: false },
+  const mk = (x, y, w, h, open) => ({
+    n: { x: x, y: y, w: w, h: h, z: null, pw: 0, ph: 0 },
+    m: { x: x, y: y, w: MINI_W, h: MINI_H, z: null, pw: 0, ph: 0 },
     min: false, open: open
   });
   cols.forEach(c => {
     // a column that is taller than the browser window gets its windows shortened (never below MIN_H); their content scrolls
-    const gap = 12, n = c.ids.length, avail = vh - c.y - 44 - gap * (n - 1); // keeps the bottom strip (socials, credit) free
+    const gap = 12, n = c.ids.length, avail = vh - c.y - WORK_BOTTOM - 4 - gap * (n - 1);
     const sum = c.ids.reduce((t, id) => t + H[id], 0), floor = n * MIN_H;
     const k = sum <= avail ? 1 : Math.max(0, (avail - floor) / (sum - floor));
     let y = c.y;
     c.ids.forEach(id => {
-      const h = Math.round(MIN_H + (H[id] - MIN_H) * k);
-      L.win[id] = mk(id, c.x, y, colW, Math.max(MIN_H, h), true);
-      y += Math.max(MIN_H, h) + gap;
+      const h = Math.max(MIN_H, Math.round(MIN_H + (H[id] - MIN_H) * k));
+      L.win[id] = mk(c.x, y, colW, h, true);
+      y += h + gap;
     });
   });
   const sw = Math.min(360, Math.max(MIN_W, vw - 32));
-  L.win.settings = mk("settings", Math.max(16, vw - sw - 16), 56, sw, Math.max(MIN_H, Math.min(H.settings, vh - 100)), false);
+  L.win.settings = mk(Math.max(16, vw - sw - 16), 56, sw, Math.max(MIN_H, Math.min(H.settings, vh - 100)), false);
   return L;
 }
 
@@ -2108,6 +2130,7 @@ function wmClean(raw) {
       n: wmCleanFrame(r.n, d.n, MIN_W, MIN_H), m: wmCleanFrame(r.m, d.m, MINI_MIN, MINI_MIN),
       min: !!r.min, open: id === "settings" ? !!r.open : true
     };
+    L.win[id].m.z = null; L.win[id].m.pw = 0; L.win[id].m.ph = 0;
   });
   const seen = {};
   if (raw && Array.isArray(raw.order)) raw.order.forEach(id => { if (has(L.win, id) && !seen[id]) { seen[id] = 1; L.order.push(id); } });
@@ -2115,35 +2138,15 @@ function wmClean(raw) {
   return L;
 }
 
-// ---- geometry: the stored rectangle + its snaps -> the rectangle shown now (follows the guides if the browser window changed size) ----
+// ---- geometry: the stored frame -> the rectangle shown now ----
 function wmResolve(f, minW, minH) {
-  const sn = f.sn || {};
-  let x = f.x, y = f.y, w = Math.max(minW, f.w), h = Math.max(minH, f.h);
-  if (has(GUIDE_X, sn.l)) x = gxPx(sn.l); else if (has(GUIDE_X, sn.r)) x = gxPx(sn.r) - w;
-  if (has(GUIDE_Y, sn.t)) {
-    y = gyPx(sn.t);
-    if (has(GUIDE_Y, sn.b) && gyPx(sn.b) - y >= minH) h = gyPx(sn.b) - y;
-  } else if (has(GUIDE_Y, sn.b)) y = gyPx(sn.b) - h;
-  const vw = wmVW(), vh = wmVH();
-  x = Math.min(Math.max(x, 40 - w), vw - 40);   // the title bar always stays reachable
-  y = Math.min(Math.max(y, 0), vh - 30);
-  return { x: x, y: y, w: w, h: h };
-}
-
-function wmNearest(v, table, px) {
-  let best = null;
-  for (const k in table) { const g = px(k), d = Math.abs(v - g); if (d <= SNAP_PX && (!best || d < best.d)) best = { k: k, g: g, d: d }; }
-  return best;
-}
-function wmSnapMove(x, y, w, h, on) {
-  const sn = {};
-  if (on) {
-    const a = wmNearest(x, GUIDE_X, gxPx), b = wmNearest(x + w, GUIDE_X, gxPx);
-    if (a && (!b || a.d <= b.d)) { x = a.g; sn.l = a.k; } else if (b) { x = b.g - w; sn.r = b.k; }
-    const c = wmNearest(y, GUIDE_Y, gyPx), d = wmNearest(y + h, GUIDE_Y, gyPx);
-    if (c && (!d || c.d <= d.d)) { y = c.g; sn.t = c.k; } else if (d) { y = d.g - h; sn.b = d.k; }
-  }
-  return { x: x, y: y, sn: sn };
+  if (f.z) { const r = wmZoneRect(f.z); if (r) return { x: r.x, y: r.y, w: Math.max(minW, r.w), h: Math.max(minH, r.h) }; }
+  const w = Math.max(minW, f.w), h = Math.max(minH, f.h), vw = wmVW(), vh = wmVH();
+  return {
+    x: Math.min(Math.max(f.x, 40 - w), vw - 40),   // the title bar always stays reachable
+    y: Math.min(Math.max(f.y, 0), vh - 30),
+    w: w, h: h
+  };
 }
 
 // ---- showing windows ----
@@ -2164,13 +2167,7 @@ function wmMarkFront() {
   for (let i = WM.L.order.length - 1; i >= 0; i--) { const id = WM.L.order[i], W = WM.L.win[id]; if (W.open && !W.min) { top = id; break; } }
   WIN_IDS.forEach(id => WM.el[id].classList.toggle("front", id === top));
 }
-function wmGuides() {
-  const on = !!(WM.set && WM.set.guides);
-  ["gV", "gH25", "gH50", "gH75"].forEach(g => { $(g).style.display = on ? "block" : "none"; });
-  $("gV").style.left = gxPx("v") + "px";
-  $("gH25").style.top = gyPx("h25") + "px"; $("gH50").style.top = gyPx("h50") + "px"; $("gH75").style.top = gyPx("h75") + "px";
-}
-function wmPlaceAll() { WIN_IDS.forEach(wmPlace); wmMarkFront(); wmGuides(); }
+function wmPlaceAll() { WIN_IDS.forEach(wmPlace); wmMarkFront(); }
 function wmFront(id) {
   const o = WM.L.order;
   if (o[o.length - 1] === id) return;
@@ -2195,30 +2192,81 @@ function wmFlush() { if (WM.timer) { clearTimeout(WM.timer); WM.timer = 0; wmSav
 )HTMLX";
 
 static const char* HTML_JS_WM2 = R"HTMLX(
+// ---- snap layout flyout (drag a window to the top of the page) ----
+function wmFlyBuild() {
+  const el = $("snapfly"), cells = [];
+  SNAP_LAYOUTS.forEach(lay => {
+    const box = document.createElement("div"); box.className = "snlay";
+    lay.cells.forEach((c, i) => {
+      const d = document.createElement("div"); d.className = "sncell";
+      d.style.left = "calc(" + (c[0] * 100) + "% + 1px)"; d.style.top = "calc(" + (c[1] * 100) + "% + 1px)";
+      d.style.width = "calc(" + (c[2] * 100) + "% - 2px)"; d.style.height = "calc(" + (c[3] * 100) + "% - 2px)";
+      box.appendChild(d); cells.push({ el: d, id: lay.id + ":" + i });
+    });
+    el.appendChild(box);
+  });
+  WM.fly = { el: el, prev: $("snapprev"), cells: cells, on: false, hover: null };
+}
+function wmFlyHide() {
+  const f = WM.fly; f.on = false; f.hover = null;
+  f.el.style.display = "none"; f.prev.style.display = "none";
+  f.cells.forEach(c => c.el.classList.remove("on"));
+}
+function wmFlyUpdate(px, py) {
+  const f = WM.fly;
+  if (!f.on && py <= 26) { f.on = true; f.el.style.display = "flex"; }
+  else if (f.on && py > f.el.getBoundingClientRect().bottom + 16) { wmFlyHide(); return; }
+  if (!f.on) return;
+  let hv = null;
+  f.cells.forEach(c => {
+    const r = c.el.getBoundingClientRect(), inside = px >= r.left && px <= r.right && py >= r.top && py <= r.bottom;
+    c.el.classList.toggle("on", inside);
+    if (inside) hv = c.id;
+  });
+  f.hover = hv;
+  const zr = hv ? wmZoneRect(hv) : null;
+  if (zr) { wmSetRect(f.prev, zr); f.prev.style.display = "block"; } else f.prev.style.display = "none";
+}
+
 // ---- dragging (title bar) and resizing (bottom-left corner) ----
 function wmFrameOf(id, mini) { const W = WM.L.win[id]; return mini ? W.m : W.n; }
 
 function wmBeginMove(ev, id, isMini) {
   if (ev.button !== 0 || ev.target.closest("button, a, input, select, textarea")) return;
   const F = wmFrameOf(id, isMini), minW = isMini ? MINI_MIN : MIN_W, minH = isMini ? MINI_MIN : MIN_H;
-  const base = wmResolve(F, minW, minH);
+  let base = wmResolve(F, minW, minH);
   wmFront(id);
-  const grab = ev.currentTarget, sx = ev.clientX, sy = ev.clientY;
+  const grab = ev.currentTarget, sx = ev.clientX, sy = ev.clientY, canSnap = !isMini && WM.set.snap;
   let moved = false;
   try { grab.setPointerCapture(ev.pointerId); } catch (e) {}
   const move = e => {
     const dx = e.clientX - sx, dy = e.clientY - sy;
     if (!moved && Math.abs(dx) + Math.abs(dy) < 3) return;
-    moved = true;
-    const nx = Math.min(Math.max(base.x + dx, 40 - base.w), wmVW() - 40);
-    const ny = Math.min(Math.max(base.y + dy, 0), wmVH() - 30);
-    const r = wmSnapMove(nx, ny, base.w, base.h, WM.set.snap && !e.altKey);
-    F.x = r.x; F.y = r.y; F.w = base.w; F.h = base.h; F.sn = r.sn;
-    if (isMini) F.p = true;
+    if (!moved) {
+      moved = true;
+      if (F.z && F.pw > 0) {   // pulling a snapped window out gives it its old size back, like Windows
+        const rel = base.w > 0 ? (sx - base.x) / base.w : 0.5;
+        base = { x: Math.round(sx - rel * F.pw), y: base.y, w: F.pw, h: F.ph };
+      }
+      F.z = null; F.pw = 0; F.ph = 0;
+    }
+    F.x = Math.min(Math.max(base.x + dx, 40 - base.w), wmVW() - 40);
+    F.y = Math.min(Math.max(base.y + dy, 0), wmVH() - 30);
+    F.w = base.w; F.h = base.h;
     wmPlace(id);
+    if (canSnap) wmFlyUpdate(e.clientX, e.clientY);
   };
-  const end = () => {
+  const end = e => {
     grab.removeEventListener("pointermove", move); grab.removeEventListener("pointerup", end); grab.removeEventListener("pointercancel", end);
+    if (canSnap && WM.fly.on) {
+      const hv = WM.fly.hover;
+      wmFlyHide();
+      if (hv && moved && e.type === "pointerup") {   // only this window snaps into the chosen zone
+        F.pw = F.w; F.ph = F.h; F.z = hv;
+        const r = wmZoneRect(hv); F.x = r.x; F.y = r.y; F.w = r.w; F.h = r.h;
+        wmPlace(id);
+      }
+    }
     if (moved) wmSave();
   };
   grab.addEventListener("pointermove", move); grab.addEventListener("pointerup", end); grab.addEventListener("pointercancel", end);
@@ -2231,26 +2279,16 @@ function wmBeginResize(ev, id, isMini) {
   const base = wmResolve(F, minW, minH), right = base.x + base.w;
   wmFront(id);
   const grab = ev.currentTarget, sx = ev.clientX, sy = ev.clientY;
-  const keepT = F.sn.t, keepR = F.sn.r;
   let moved = false;
   try { grab.setPointerCapture(ev.pointerId); } catch (e) {}
   const move = e => {
     const dx = e.clientX - sx, dy = e.clientY - sy;
     if (!moved && Math.abs(dx) + Math.abs(dy) < 2) return;
     moved = true;
-    const snapOn = WM.set.snap && !e.altKey, sn = {};
-    if (keepT) sn.t = keepT;      // the top and right edges stay where they are
-    if (keepR) sn.r = keepR;
-    let nx = Math.max(Math.min(base.x + dx, right - minW), Math.min(base.x, 0));
-    let nb = Math.min(Math.max(base.y + base.h + dy, base.y + minH), wmVH());
-    if (snapOn) {
-      const a = wmNearest(nx, GUIDE_X, gxPx);
-      if (a && right - a.g >= minW) { nx = a.g; sn.l = a.k; }
-      const b = wmNearest(nb, GUIDE_Y, gyPx);
-      if (b && b.g - base.y >= minH) { nb = b.g; sn.b = b.k; }
-    }
-    F.x = nx; F.w = right - nx; F.y = base.y; F.h = nb - base.y; F.sn = sn;
-    if (isMini) F.p = true;
+    const nx = Math.max(Math.min(base.x + dx, right - minW), Math.min(base.x, 0));   // the right edge stays put
+    const nb = Math.min(Math.max(base.y + base.h + dy, base.y + minH), wmVH());
+    F.x = nx; F.w = right - nx; F.y = base.y; F.h = nb - base.y;
+    F.z = null; F.pw = 0; F.ph = 0;
     wmPlace(id);
   };
   const end = () => {
@@ -2260,15 +2298,21 @@ function wmBeginResize(ev, id, isMini) {
   grab.addEventListener("pointermove", move); grab.addEventListener("pointerup", end); grab.addEventListener("pointercancel", end);
 }
 
-// ---- minimize / restore / settings window ----
+// ---- minimize / restore: the icon window and the window follow each other ----
 function wmMinimize(id) {
-  const W = WM.L.win[id];
-  if (!W.m.p) { const r = wmResolve(W.n, MIN_W, MIN_H); W.m.x = r.x; W.m.y = r.y; W.m.sn = {}; } // an icon window you never moved opens where its window was
+  const W = WM.L.win[id], r = wmResolve(W.n, MIN_W, MIN_H);
+  W.m.x = r.x; W.m.y = r.y;                       // the icon window appears where the window is
   W.min = true;
   wmPlaceAll(); wmSave();
 }
 function wmRestore(id) {
-  WM.L.win[id].min = false;
+  const W = WM.L.win[id], mr = wmResolve(W.m, MINI_MIN, MINI_MIN), nr = wmResolve(W.n, MIN_W, MIN_H);
+  if (mr.x !== nr.x || mr.y !== nr.y) {           // the icon window was moved: the window opens where it is (kept on screen)
+    W.n.x = Math.max(0, Math.min(mr.x, wmVW() - nr.w));
+    W.n.y = Math.max(0, Math.min(mr.y, wmVH() - nr.h));
+    W.n.w = nr.w; W.n.h = nr.h; W.n.z = null; W.n.pw = 0; W.n.ph = 0;
+  }
+  W.min = false;
   const o = WM.L.order; o.splice(o.indexOf(id), 1); o.push(id);
   wmPlaceAll(); wmSave();
 }
@@ -2289,6 +2333,7 @@ function resetLayout() {
 // ---- building the windows ----
 function wmBuild() {
   const desk = $("desk");
+  wmFlyBuild();
   WIN_IDS.forEach(id => {
     const el = $("w-" + id), title = el.dataset.title, abbr = el.dataset.abbr;
     WM.el[id] = el;
@@ -2330,17 +2375,14 @@ function wmBuild() {
 
 // ---- settings (config\settings.json) ----
 function wmCleanSettings(raw) {
-  const s = { snap: true, guides: false, social: {} };
-  if (raw && typeof raw === "object") {
-    if (typeof raw.snap === "boolean") s.snap = raw.snap;
-    if (typeof raw.guides === "boolean") s.guides = raw.guides;
-  }
+  const s = { snap: true, social: {} };
+  if (raw && typeof raw === "object" && typeof raw.snap === "boolean") s.snap = raw.snap;
   SOCIALS.forEach(x => { s.social[x.id] = !(raw && raw.social && typeof raw.social === "object" && raw.social[x.id] === false); });
   return s;
 }
 function wmApplySettings() {
   const s = WM.set;
-  $("optSnap").checked = s.snap; $("optGuides").checked = s.guides;
+  $("optSnap").checked = s.snap;
   SOCIALS.forEach(x => { $("optSocial_" + x.id).checked = s.social[x.id]; });
   const nav = $("socials"); nav.textContent = "";
   SOCIALS.forEach(x => {
@@ -2348,11 +2390,10 @@ function wmApplySettings() {
     const a = document.createElement("a"); a.href = x.url; a.target = "_blank"; a.rel = "noopener noreferrer"; a.textContent = "[" + x.label + "]";
     nav.appendChild(a);
   });
-  wmGuides();
 }
 function wmSettingChanged() {
   const s = WM.set;
-  s.snap = $("optSnap").checked; s.guides = $("optGuides").checked;
+  s.snap = $("optSnap").checked;
   SOCIALS.forEach(x => { s.social[x.id] = $("optSocial_" + x.id).checked; });
   wmApplySettings();
   const body = JSON.stringify(s);
