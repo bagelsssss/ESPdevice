@@ -1689,27 +1689,24 @@ html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg);
 .mimg { object-fit: contain; }
 .mcar { position: absolute; left: 3px; top: 3px; width: 18px; height: 18px; min-width: 0; padding: 0; font-size: 12px; line-height: 1; display: flex; align-items: center; justify-content: center; z-index: 3; }
 /* corner widgets */
-.gear { position: fixed; right: 16px; top: 16px; z-index: 3; }
+.tbtns { position: fixed; right: 16px; top: 16px; z-index: 3; display: flex; gap: 8px; }
 .gear img { display: block; width: 24px; height: 24px; object-fit: contain; pointer-events: none; }
 .gear.hasicon { padding: 3px; background: transparent; border-color: transparent; }
 .gear.hasicon:hover { background: var(--c-btn-hover-bg); border-color: var(--c-btn-border); }
-.divider { position: fixed; left: 0; right: 0; bottom: 52px; height: 1px; background: var(--c-border); z-index: 1; pointer-events: none; }
+.divider { position: fixed; left: 0; right: 0; bottom: 64px; height: 1px; background: var(--c-border); opacity: 0.5; z-index: 1; pointer-events: none; }
 .socials { position: fixed; left: 16px; bottom: 12px; z-index: 1; display: flex; gap: 14px; }
 .socials a { color: var(--c-dim); text-decoration: none; display: flex; align-items: center; }
 .sicon { display: block; width: 22px; height: 22px; object-fit: contain; }
 .socials a:hover { color: var(--c-fg); text-decoration: underline; }
 .br { position: fixed; right: 16px; bottom: 12px; z-index: 1; text-align: right; }
 .credit { opacity: 0.5; color: var(--c-credit); }
-/* snap layouts flyout (Windows 11 style): appears at the top while a window is dragged there */
-#snapfly { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 9000; display: none; gap: 10px; padding: 8px; max-width: calc(100vw - 16px); overflow: hidden; background: var(--c-bg); border: 1px solid var(--c-border); }
-.snlay { position: relative; flex: none; width: 78px; height: 48px; }
-.sncell { position: absolute; border: 1px solid var(--c-border); background: var(--c-bg); }
-.sncell.on { background: var(--c-btn-hover-bg); border-color: var(--c-btn-hover-bg); }
-#snapprev { position: fixed; z-index: 8999; display: none; pointer-events: none; border: 2px solid var(--c-fg); background: var(--c-fg); opacity: 0.16; }
 /* per-window tweaks */
-.vis { display: flex; flex-wrap: wrap; gap: 12px 28px; align-items: flex-start; }
-.counters { display: grid; gap: 6px; padding-top: 4px; min-width: 110px; color: var(--c-stat-label); }
-.counters div { white-space: nowrap; } .counters span { color: var(--c-stat-value); }
+.vis { display: flex; flex-wrap: wrap; gap: 12px 32px; align-items: center; }
+.counters { display: grid; gap: 8px; min-width: 150px; font-size: 1.35em; color: var(--c-stat-label); }
+.counters div { white-space: nowrap; justify-self: start; padding: 1px 6px; margin: 0 -6px; } .counters span { color: var(--c-stat-value); font-size: 1.2em; }
+.counters div.flash { animation: cflash 0.35s ease-out; }
+@keyframes cflash { from { background: var(--c-fg); color: var(--c-bg); } to { background: transparent; } }
+.counters div.flash span { animation: cflash 0.35s ease-out; }
 #w-debugger .wbody { display: flex; flex-direction: column; }
 #w-debugger .wbody > * { flex: none; }
 #w-debugger #log { flex: 1 1 90px; height: auto; min-height: 70px; }
@@ -1721,7 +1718,6 @@ html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg);
 )HTMLX";
 
 static const char* HTML_BODY = R"HTMLX(<body>
-<div id="snapfly"></div><div id="snapprev"></div>
 <div class="divider" id="divider"></div>
 <div class="hdr">
 <div class="hero">
@@ -1741,7 +1737,7 @@ static const char* HTML_BODY = R"HTMLX(<body>
 <h1 class="brand">ESPdevice<span class="cur">_</span></h1>
 </div>
 </div>
-<button class="gear" id="gearBtn" onclick="wmToggleSettings()" title="Open / close the settings window">[ SETTINGS ]</button>
+<div class="tbtns" id="tbtns"><button class="gear" id="themeBtn" onclick="wmToggle('theme')" title="Open / close the themes window">[ THEMES ]</button><button class="gear" id="gearBtn" onclick="wmToggle('settings')" title="Open / close the settings window">[ SETTINGS ]</button></div>
 
 <div id="desk">
 
@@ -1802,7 +1798,7 @@ static const char* HTML_BODY = R"HTMLX(<body>
 <p class="dim">latency = keypad byte received by the service until SendInput returned (excludes USB transit time).</p>
 </div></section>
 
-<section class="win" id="w-theme" data-title="THEME" data-abbr="THM"><div class="wbody">
+<section class="win" id="w-theme" data-title="THEME" data-abbr="THM" data-closable="1"><div class="wbody">
 <div class="row">
   <select id="themeSelect" onchange="pickTheme()"></select>
   <button onclick="copyTheme()">COPY</button>
@@ -1819,9 +1815,8 @@ static const char* HTML_BODY = R"HTMLX(<body>
 
 <section class="win" id="w-settings" data-title="SETTINGS" data-abbr="SET" data-closable="1"><div class="wbody">
 <div class="setgrp">WINDOWS</div>
-<label class="opt"><input type="checkbox" id="optSnap" onchange="wmSettingChanged()"> snap layouts: drag a window to the top of the page to pick a zone</label>
 <div class="row"><button onclick="resetLayout()">RESET WINDOW LAYOUT</button></div>
-<label class="opt"><input type="checkbox" id="optGearTop" onchange="wmSettingChanged()"> keep the settings button on top of the windows</label>
+<label class="opt"><input type="checkbox" id="optGearTop" onchange="wmSettingChanged()"> keep the settings and themes buttons on top of the windows</label>
 <div class="setgrp">COUNTERS</div>
 <div class="row"><button onclick="resetCounters()">RESET CPS / TOTAL</button></div>
 <div class="setgrp">SOCIAL LINKS (bottom left)</div>
@@ -2111,23 +2106,13 @@ async function loadTheme() {
 
 static const char* HTML_JS_WM1 = R"HTMLX(
 // ================= WINDOWS (v1.1) =================
-// Every section is a floating window: drag it by the title bar (freeform, nothing snaps), resize from the bottom-left
-// corner, minimize with "v" (it becomes a small icon window; "^" opens it again). Drag a window to the top of the page
-// to get the snap layouts (like Windows 11): pick a zone and only that window snaps into it.
-// Positions, sizes, minimized state, stacking order and snap zones are saved to config\layout.json.
+// Every section is a floating window: drag it by the title bar (freeform, nothing snaps), resize from either bottom corner,
+// minimize with "v" (it becomes a small icon window; "^" opens it again).
+// Positions, sizes, minimized state and stacking order are saved to config\layout.json.
 const WIN_IDS = ["profile", "visualizer", "keybinds", "service", "debugger", "theme", "settings"];
 const WIN_ICON = { profile: "Profile", visualizer: "Visualizer", keybinds: "Keybinds", service: "Service", debugger: "Debugger", theme: "Theme", settings: "Settings" }; // config\icons\<Name>_icon.png
-// cells = [x, y, w, h] as fractions of the work area (the page minus the top and bottom strips)
-const SNAP_LAYOUTS = [
-  { id: "h2",   cells: [[0, 0, 0.5, 1], [0.5, 0, 0.5, 1]] },
-  { id: "w21",  cells: [[0, 0, 2 / 3, 1], [2 / 3, 0, 1 / 3, 1]] },
-  { id: "c3",   cells: [[0, 0, 1 / 3, 1], [1 / 3, 0, 1 / 3, 1], [2 / 3, 0, 1 / 3, 1]] },
-  { id: "c121", cells: [[0, 0, 0.25, 1], [0.25, 0, 0.5, 1], [0.75, 0, 0.25, 1]] },
-  { id: "lr2",  cells: [[0, 0, 0.5, 1], [0.5, 0, 0.5, 0.5], [0.5, 0.5, 0.5, 0.5]] },
-  { id: "l2r",  cells: [[0, 0, 0.5, 0.5], [0, 0.5, 0.5, 0.5], [0.5, 0, 0.5, 1]] },
-  { id: "q4",   cells: [[0, 0, 0.5, 0.5], [0.5, 0, 0.5, 0.5], [0, 0.5, 0.5, 0.5], [0.5, 0.5, 0.5, 0.5]] }
-];
-const WORK_TOP = 44, WORK_BOTTOM = 52, SNAP_EDGE = 8, SNAP_GAP = 8; // snapped windows leave the top (settings button) and bottom (links, status) strips free
+const WORK_BOTTOM = 64;   // the bottom strip (links, status) under the divider line; default windows stay above it
+const HIDDEN = ["theme", "settings"];   // closed until you open them with the buttons at the top right
 const MIN_W = 200, MIN_H = 90, MINI_MIN = 36, MINI_W = 88, MINI_H = 64;
 const SOCIALS = [
   { id: "github",  label: "github",  icon: "Github",  url: "https://github.com/bagelsssss" },
@@ -2142,25 +2127,14 @@ const wmNum = (v, d) => (typeof v === "number" && isFinite(v) && Math.abs(v) < 1
 function wmVW() { return document.documentElement.clientWidth; }
 function wmVH() { return document.documentElement.clientHeight; }
 
-// "h2:1" = layout h2, zone 1 -> the rectangle it covers right now (it follows the browser window's size)
-function wmZoneRect(zid) {
-  const p = String(zid).split(":"), lay = SNAP_LAYOUTS.find(l => l.id === p[0]), c = lay && lay.cells[parseInt(p[1], 10)];
-  if (!c || !/^\d$/.test(p[1] || "")) return null;
-  const vw = wmVW(), vh = wmVH(), wh = Math.max(100, vh - WORK_TOP - WORK_BOTTOM), g = SNAP_GAP / 2;
-  const x0 = c[0], y0 = c[1], x1 = c[0] + c[2], y1 = c[1] + c[3];
-  const L = Math.round(x0 * vw) + (x0 < 0.001 ? SNAP_EDGE : g), R = Math.round(x1 * vw) - (x1 > 0.999 ? SNAP_EDGE : g);
-  const T = WORK_TOP + Math.round(y0 * wh) + (y0 < 0.001 ? 0 : g), B = WORK_TOP + Math.round(y1 * wh) - (y1 > 0.999 ? 0 : g);
-  return { x: L, y: T, w: R - L, h: B - T };
-}
-
 // ---- model: { order:[ids bottom..top], win:{ id:{ n:frame, m:frame, min, open } } }, frame = { x, y, w, h, z, pw, ph } ----
-// z = snap zone ("layout:cell") or null; pw/ph = the size before it was snapped (restored when you drag it out)
+// z / pw / ph are kept (always null / 0 for now) so snapping can come back in a later build without changing the file
 function wmCleanFrame(f, d, minW, minH) {
   f = (f && typeof f === "object") ? f : {};
   const pw = wmNum(f.pw, 0), ph = wmNum(f.ph, 0);
   return {
     x: wmNum(f.x, d.x), y: wmNum(f.y, d.y), w: Math.max(minW, wmNum(f.w, d.w)), h: Math.max(minH, wmNum(f.h, d.h)),
-    z: (typeof f.z === "string" && wmZoneRect(f.z)) ? f.z : null,
+    z: null,
     pw: (pw > 0 && ph > 0) ? Math.max(minW, pw) : 0, ph: (pw > 0 && ph > 0) ? Math.max(minH, ph) : 0
   };
 }
@@ -2168,12 +2142,14 @@ function wmCleanFrame(f, d, minW, minH) {
 function wmDefaults() {
   const vw = wmVW(), vh = wmVH();
   const hb = document.querySelector(".hdr").getBoundingClientRect();
-  const colW = Math.max(MIN_W, Math.min(580, Math.floor((vw - 48) / 2)));
+  // the same arrangement as 1.0: a page of at most 1200 px in the middle, two equal columns under the header
+  const page = Math.min(1200, vw), colW = Math.max(MIN_W, Math.floor((page - 48) / 2)), x0 = Math.max(16, Math.floor((vw - page) / 2) + 16);
+  const y0 = Math.max(Math.ceil(hb.bottom), 150) + 8;
   const cols = [
-    { x: 16, y: Math.max(Math.ceil(hb.bottom), 150) + 8, ids: ["profile", "visualizer", "keybinds", "service"] },
-    { x: Math.max(16, Math.min(16 + colW + 16, vw - colW - 16)), y: 56, ids: ["debugger", "theme"] }
+    { x: x0, y: y0, ids: ["profile", "visualizer", "keybinds", "service"] },
+    { x: Math.max(16, Math.min(x0 + colW + 16, vw - colW - 16)), y: y0, ids: ["debugger"] }
   ];
-  const H = { profile: 110, visualizer: 150, keybinds: 290, service: 90, debugger: 520, theme: 500, settings: 400 };
+  const H = { profile: 128, visualizer: 170, keybinds: 290, service: 90, debugger: 520, theme: 500, settings: 400 };
   const L = { v: 1, order: WIN_IDS.slice(), win: {} };
   const mk = (x, y, w, h, open) => ({
     n: { x: x, y: y, w: w, h: h, z: null, pw: 0, ph: 0 },
@@ -2194,6 +2170,7 @@ function wmDefaults() {
   });
   const sw = Math.min(360, Math.max(MIN_W, vw - 32));
   L.win.settings = mk(Math.max(16, vw - sw - 16), 56, sw, Math.max(MIN_H, Math.min(H.settings, vh - 100)), false);
+  L.win.theme = mk(Math.max(16, vw - sw - 44), 84, sw, Math.max(MIN_H, Math.min(H.theme, vh - 130)), false);
   return L;
 }
 
@@ -2206,7 +2183,7 @@ function wmClean(raw) {
     if (!r) { L.win[id] = d; return; }
     L.win[id] = {
       n: wmCleanFrame(r.n, d.n, MIN_W, MIN_H), m: wmCleanFrame(r.m, d.m, MINI_MIN, MINI_MIN),
-      min: !!r.min, open: id === "settings" ? !!r.open : true
+      min: !!r.min, open: HIDDEN.indexOf(id) >= 0 ? !!r.open : true
     };
     L.win[id].m.z = null; L.win[id].m.pw = 0; L.win[id].m.ph = 0;
   });
@@ -2218,7 +2195,6 @@ function wmClean(raw) {
 
 // ---- geometry: the stored frame -> the rectangle shown now ----
 function wmResolve(f, minW, minH) {
-  if (f.z) { const r = wmZoneRect(f.z); if (r) return { x: r.x, y: r.y, w: Math.max(minW, r.w), h: Math.max(minH, r.h) }; }
   const w = Math.max(minW, f.w), h = Math.max(minH, f.h), vw = wmVW(), vh = wmVH();
   return {
     x: Math.min(Math.max(f.x, 40 - w), vw - 40),   // the title bar always stays reachable
@@ -2270,51 +2246,15 @@ function wmFlush() { if (WM.timer) { clearTimeout(WM.timer); WM.timer = 0; wmSav
 )HTMLX";
 
 static const char* HTML_JS_WM2 = R"HTMLX(
-// ---- snap layout flyout (drag a window to the top of the page) ----
-function wmFlyBuild() {
-  const el = $("snapfly"), cells = [];
-  SNAP_LAYOUTS.forEach(lay => {
-    const box = document.createElement("div"); box.className = "snlay";
-    lay.cells.forEach((c, i) => {
-      const d = document.createElement("div"); d.className = "sncell";
-      d.style.left = "calc(" + (c[0] * 100) + "% + 1px)"; d.style.top = "calc(" + (c[1] * 100) + "% + 1px)";
-      d.style.width = "calc(" + (c[2] * 100) + "% - 2px)"; d.style.height = "calc(" + (c[3] * 100) + "% - 2px)";
-      box.appendChild(d); cells.push({ el: d, id: lay.id + ":" + i });
-    });
-    el.appendChild(box);
-  });
-  WM.fly = { el: el, prev: $("snapprev"), cells: cells, on: false, hover: null };
-}
-function wmFlyHide() {
-  const f = WM.fly; f.on = false; f.hover = null;
-  f.el.style.display = "none"; f.prev.style.display = "none";
-  f.cells.forEach(c => c.el.classList.remove("on"));
-}
-function wmFlyUpdate(px, py) {
-  const f = WM.fly;
-  if (!f.on && py <= 26) { f.on = true; f.el.style.display = "flex"; }
-  else if (f.on && py > f.el.getBoundingClientRect().bottom + 16) { wmFlyHide(); return; }
-  if (!f.on) return;
-  let hv = null;
-  f.cells.forEach(c => {
-    const r = c.el.getBoundingClientRect(), inside = px >= r.left && px <= r.right && py >= r.top && py <= r.bottom;
-    c.el.classList.toggle("on", inside);
-    if (inside) hv = c.id;
-  });
-  f.hover = hv;
-  const zr = hv ? wmZoneRect(hv) : null;
-  if (zr) { wmSetRect(f.prev, zr); f.prev.style.display = "block"; } else f.prev.style.display = "none";
-}
-
 // ---- dragging (title bar) and resizing (bottom-left corner) ----
 function wmFrameOf(id, mini) { const W = WM.L.win[id]; return mini ? W.m : W.n; }
 
 function wmBeginMove(ev, id, isMini) {
   if (ev.button !== 0 || ev.target.closest("button, a, input, select, textarea")) return;
   const F = wmFrameOf(id, isMini), minW = isMini ? MINI_MIN : MIN_W, minH = isMini ? MINI_MIN : MIN_H;
-  let base = wmResolve(F, minW, minH);
+  const base = wmResolve(F, minW, minH);
   wmFront(id);
-  const grab = ev.currentTarget, sx = ev.clientX, sy = ev.clientY, canSnap = !isMini && WM.set.snap;
+  const grab = ev.currentTarget, sx = ev.clientX, sy = ev.clientY;
   let moved = false;
   try { grab.setPointerCapture(ev.pointerId); } catch (e) {}
   const move = e => {
@@ -2322,29 +2262,15 @@ function wmBeginMove(ev, id, isMini) {
     if (!moved && Math.abs(dx) + Math.abs(dy) < 3) return;
     if (!moved) {
       moved = true;
-      if (F.z && F.pw > 0) {   // pulling a snapped window out gives it its old size back, like Windows
-        const rel = base.w > 0 ? (sx - base.x) / base.w : 0.5;
-        base = { x: Math.round(sx - rel * F.pw), y: base.y, w: F.pw, h: F.ph };
-      }
       F.z = null; F.pw = 0; F.ph = 0;
     }
     F.x = Math.min(Math.max(base.x + dx, 40 - base.w), wmVW() - 40);
     F.y = Math.min(Math.max(base.y + dy, 0), wmVH() - 30);
     F.w = base.w; F.h = base.h;
     wmPlace(id);
-    if (canSnap) wmFlyUpdate(e.clientX, e.clientY);
   };
-  const end = e => {
+  const end = () => {
     grab.removeEventListener("pointermove", move); grab.removeEventListener("pointerup", end); grab.removeEventListener("pointercancel", end);
-    if (canSnap && WM.fly.on) {
-      const hv = WM.fly.hover;
-      wmFlyHide();
-      if (hv && moved && e.type === "pointerup") {   // only this window snaps into the chosen zone
-        F.pw = F.w; F.ph = F.h; F.z = hv;
-        const r = wmZoneRect(hv); F.x = r.x; F.y = r.y; F.w = r.w; F.h = r.h;
-        wmPlace(id);
-      }
-    }
     if (moved) wmSave();
   };
   grab.addEventListener("pointermove", move); grab.addEventListener("pointerup", end); grab.addEventListener("pointercancel", end);
@@ -2400,24 +2326,23 @@ function wmRestore(id) {
   const o = WM.L.order; o.splice(o.indexOf(id), 1); o.push(id);
   wmPlaceAll(); wmSave();
 }
-function wmToggleSettings() {
-  const W = WM.L.win.settings, o = WM.L.order;
+function wmToggle(id) {   // the buttons at the top right: open or close the settings / themes window
+  const W = WM.L.win[id], o = WM.L.order;
   if (W.open) W.open = false;
-  else { W.open = true; W.min = false; o.splice(o.indexOf("settings"), 1); o.push("settings"); }
+  else { W.open = true; W.min = false; o.splice(o.indexOf(id), 1); o.push(id); }
   wmPlaceAll(); wmSave();
 }
 function resetLayout() {
   if (!confirm("Put every window back in its default place and size?")) return;
-  const keepOpen = WM.L.win.settings.open;
+  const keep = HIDDEN.map(id => WM.L.win[id].open);
   WM.L = wmClean(null);
-  WM.L.win.settings.open = keepOpen;
+  HIDDEN.forEach((id, i) => { WM.L.win[id].open = keep[i]; });
   wmPlaceAll(); wmSaveNow(false);
 }
 
 // ---- building the windows ----
 function wmBuild() {
   const desk = $("desk");
-  wmFlyBuild();
   WIN_IDS.forEach(id => {
     const el = $("w-" + id), title = el.dataset.title, abbr = el.dataset.abbr;
     WM.el[id] = el;
@@ -2433,7 +2358,7 @@ function wmBuild() {
     bar.appendChild(wi);
     if (el.dataset.closable) {
       const cb = document.createElement("button"); cb.className = "wbtn"; cb.textContent = "x"; cb.title = "Close"; cb.setAttribute("aria-label", "Close " + title);
-      cb.onclick = () => wmToggleSettings();
+      cb.onclick = () => wmToggle(id);
       bar.appendChild(cb);
     }
     el.insertBefore(bar, el.firstChild);
@@ -2467,9 +2392,8 @@ function wmBuild() {
 
 // ---- settings (config\settings.json) ----
 function wmCleanSettings(raw) {
-  const s = { snap: true, gearTop: true, social: {} };
+  const s = { gearTop: true, social: {} };
   if (raw && typeof raw === "object") {
-    if (typeof raw.snap === "boolean") s.snap = raw.snap;
     if (typeof raw.gearTop === "boolean") s.gearTop = raw.gearTop;
   }
   SOCIALS.forEach(x => { s.social[x.id] = !(raw && raw.social && typeof raw.social === "object" && raw.social[x.id] === false); });
@@ -2477,8 +2401,8 @@ function wmCleanSettings(raw) {
 }
 function wmApplySettings() {
   const s = WM.set;
-  $("optSnap").checked = s.snap; $("optGearTop").checked = s.gearTop;
-  $("gearBtn").style.zIndex = s.gearTop ? "3" : "1";   // 3 = above the windows, 1 = windows can cover it
+  $("optGearTop").checked = s.gearTop;
+  $("tbtns").style.zIndex = s.gearTop ? "3" : "1";   // 3 = above the windows, 1 = windows can cover it
   SOCIALS.forEach(x => { $("optSocial_" + x.id).checked = s.social[x.id]; });
   const nav = $("socials"); nav.textContent = "";
   SOCIALS.forEach(x => {
@@ -2494,7 +2418,7 @@ function wmApplySettings() {
 }
 function wmSettingChanged() {
   const s = WM.set;
-  s.snap = $("optSnap").checked; s.gearTop = $("optGearTop").checked;
+  s.gearTop = $("optGearTop").checked;
   SOCIALS.forEach(x => { s.social[x.id] = $("optSocial_" + x.id).checked; });
   wmApplySettings();
   const body = JSON.stringify(s);
@@ -2508,10 +2432,12 @@ async function wmInit() {
   WM.set = wmCleanSettings(res[1]);
   WM.L = wmClean(res[0]);
   wmApplySettings();
-  $("divider").style.bottom = WORK_BOTTOM + "px";   // snap zones end at this line
-  const gi = new Image(); gi.alt = ""; gi.draggable = false;
-  gi.onload = () => { const g = $("gearBtn"); g.textContent = ""; g.appendChild(gi); g.classList.add("hasicon"); };   // Settings_icon.png replaces the text
-  gi.src = "/api/icon/Settings?v=" + Date.now();
+  $("divider").style.bottom = WORK_BOTTOM + "px";
+  [["gearBtn", "Settings"], ["themeBtn", "Theme"]].forEach(p => {   // Settings_icon.png / Theme_icon.png replace the button text
+    const gi = new Image(); gi.alt = ""; gi.draggable = false;
+    gi.onload = () => { const g = $(p[0]); g.textContent = ""; g.appendChild(gi); g.classList.add("hasicon"); };
+    gi.src = "/api/icon/" + p[1] + "?v=" + Date.now();
+  });
   wmPlaceAll();
   $("desk").classList.add("ready");
   window.addEventListener("resize", wmPlaceAll);
@@ -2773,7 +2699,10 @@ function paintCounters() {
   if (c.textContent !== cs) c.textContent = cs;
   if (t.textContent !== ts) t.textContent = ts;
 }
-function cpsHit() { cpsTimes.push(performance.now()); cTotal++; paintCounters(); }
+function cpsHit() {
+  cpsTimes.push(performance.now()); cTotal++; paintCounters();
+  document.querySelectorAll(".counters div").forEach(d => { d.classList.remove("flash"); void d.offsetWidth; d.classList.add("flash"); });   // flash on every press
+}
 function syncTotal(total, since) {
   if (total !== cSrv) { cSrv = total; cTotal = total; paintCounters(); }
   if (since > 0) $("cTotalRow").title = "since " + new Date(since * 1000).toLocaleDateString();

@@ -75,18 +75,19 @@ You still need to build and flash the keypad itself, see [Make your own keypad](
 - Debugger: link status and COM port, reports per second, event log (freeze/clear), your Windows hold delay and repeat rate, and measured latency (last / average / max) from byte received to `SendInput` returned.
 
 **Windows (new in 1.1)**
-- Every section (PROFILE, VISUALIZER, KEYBINDS, SERVICE, DEBUGGER, THEME, SETTINGS) is a floating window. Drag it by the title bar to put it anywhere, with no snapping to the screen edges. Each window has a resize handle in both bottom corners, and shows its own icon at the right end of the title bar (if you made one, see [ICONS.md](ICONS.md)).
-- Resize a window by dragging the small corner mark at its bottom-left.
+- Every section (PROFILE, VISUALIZER, KEYBINDS, SERVICE, DEBUGGER, THEME, SETTINGS) is a floating window. Drag it by the title bar to put it anywhere, with nothing snapping. Each window has a resize handle in both bottom corners and shows its own icon at the right end of the title bar (if you made one, see [ICONS.md](ICONS.md)).
+- The first time (or after RESET WINDOW LAYOUT) the windows are arranged like in 1.0: two columns in the middle of the page, PROFILE, VISUALIZER, KEYBINDS and SERVICE on the left and DEBUGGER on the right. THEME and SETTINGS start closed.
+- Resize a window by dragging the small corner mark at its bottom-left or bottom-right.
 - Click the `v` button to minimize a window into a small icon window. It appears where the window was and can be dragged and resized too. `^` (or a double-click) opens the window again, right where the icon window is now.
-- Nothing snaps while you drag, except through the **snap layouts** (like Windows 11): drag a window to the top of the page and a strip of layouts drops down (halves, 2/3 + 1/3, three columns, narrow-wide-narrow, and so on). Move over a zone to see a preview, let go, and only that window snaps into it. Drag it out again and it gets its old size back. Turn this off in SETTINGS.
-- Everything is remembered exactly: position, size, minimized state, icon window position and size, stacking order and snap zones, saved in `config\layout.json`. A snapped window follows its zone if the browser window changes size. **SETTINGS > RESET WINDOW LAYOUT** puts everything back.
-- Icons for minimized windows: put PNG files in `config\icons\` named `Profile_icon.png`, `Visualizer_icon.png`, `Keybinds_icon.png`, `Service_icon.png`, `Debugger_icon.png`, `Theme_icon.png` and `Settings_icon.png` (square, transparent background works best). Without them a placeholder is shown.
+- Snapping windows to zones is planned for a future build.
+- Everything is remembered exactly: position, size, minimized state, icon window position and size and stacking order, saved in `config\layout.json`. **SETTINGS > RESET WINDOW LAYOUT** puts everything back.
+- Icons: put 256x256 PNG files in `config\icons\` named `Profile_icon.png`, `Visualizer_icon.png`, `Keybinds_icon.png`, `Service_icon.png`, `Debugger_icon.png`, `Theme_icon.png` and `Settings_icon.png` (transparent background). They are used for the minimized window, the title bar and the top-right buttons. Without them a placeholder or text is shown. Full list in [ICONS.md](ICONS.md).
 
 **Settings and extras**
-- A white line across the page (above the links and status) marks where snap layouts stop; windows can still be dragged below it.
+- A thin line across the page (50% opacity) separates the windows from the links and status strip. Windows can still be dragged below it.
 - The VISUALIZER shows **CPS** (key presses in the last second, all keys) and **Total** (every press since the counter started). The app counts the total itself, so presses are counted even with the page closed; it is saved in `config\counters.json`. Reset both in SETTINGS.
-- The settings button and the social links become your own icons when `Settings_icon.png`, `Github_icon.png` and so on exist in `config\icons\`; otherwise text is shown.
-- The `[ SETTINGS ]` button at the top right opens the settings window (saved in `config\settings.json`): snap layouts on or off, keeping the settings button on top of the windows, resetting the counters, and which social links to show.
+- The settings and themes buttons and the social links become your own icons when `Settings_icon.png`, `Theme_icon.png`, `Github_icon.png` and so on exist in `config\icons\`; otherwise text is shown.
+- The `[ THEMES ]` button at the top right opens and closes the THEME window. The `[ SETTINGS ]` button next to it opens the settings window (saved in `config\settings.json`): keeping both buttons on top of the windows, resetting the counters, resetting the window layout, and which social links to show.
 - Social links (GitHub, YouTube, TikTok, Discord) sit in the bottom-left corner and can be switched off one by one.
 - The connection status (for example `CONNECTED COM3 | ACTIVE`) and the credit with the version number sit in the bottom-right corner.
 
@@ -197,13 +198,13 @@ Open http://localhost:9191 (or tray icon > Open Settings).
 
 | Section | What it does |
 |---------|--------------|
-| **SETTINGS** | Opened with the button at the top right: snap layouts, settings button on top, social links, reset counters, reset window layout. |
+| **SETTINGS** | Opened with the button at the top right: buttons on top, social links, reset counters, reset window layout. |
 | **PROFILE** | Pick, add, rename or delete profiles (up to 99). |
 | **VISUALIZER** | Shows the 3 keys lighting up live, with their current bindings. |
 | **KEYBINDS** | Edit each key's binding: type + ENTER, or CAPTURE. |
 | **SERVICE** | PAUSE / RESUME typing, or TERMINATE the app. |
 | **DEBUGGER** | Link status, reports per second, latency stats, live event log. |
-| **THEME** | Switch, copy, rename, delete and edit color themes. |
+| **THEME** | Opened with the `[ THEMES ]` button at the top right. Switch, copy, rename, delete and edit color themes. |
 
 ## Troubleshooting
 
