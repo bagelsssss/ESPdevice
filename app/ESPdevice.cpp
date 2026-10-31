@@ -1690,6 +1690,18 @@ html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg);
 .mcar { position: absolute; left: 3px; top: 3px; width: 18px; height: 18px; min-width: 0; padding: 0; font-size: 12px; line-height: 1; display: flex; align-items: center; justify-content: center; z-index: 3; }
 /* corner widgets */
 .tbtns { position: fixed; right: 16px; top: 16px; z-index: 3; display: flex; gap: 8px; }
+.tbtns.open { z-index: 100 !important; }   /* an open pull-down is always above the windows */
+.tb { position: relative; }
+.gear.on { border-color: var(--c-border); position: relative; z-index: 2; }
+/* pull-down menus: hang from their button (the button is the tab at the top-right corner of the panel) */
+.menu { position: absolute; right: 0; top: 100%; margin-top: -1px; display: none; background: var(--c-bg); border: 1px solid var(--c-border); padding: 6px 14px 14px 14px; overflow: auto; width: 360px; max-width: calc(100vw - 32px); max-height: calc(100vh - 116px); transform-origin: 100% 0; scrollbar-width: thin; scrollbar-color: var(--c-border) var(--c-bg); }
+#menu-theme { width: 480px; }
+.err:empty { display: none; }
+.menu.opening { animation: mopen 0.4s steps(4, end) both; }
+.menu.closing { animation: mclose 0.4s steps(4, end) both; }
+@keyframes mopen { from { transform: scale(0.82); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes mclose { from { transform: none; opacity: 1; } to { transform: scale(0.82); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .menu.opening, .menu.closing { animation: none; } }
 .gear img { display: block; width: 24px; height: 24px; object-fit: contain; pointer-events: none; }
 .gear.hasicon { padding: 3px; background: transparent; border-color: transparent; }
 .gear.hasicon:hover { background: var(--c-btn-hover-bg); border-color: var(--c-btn-border); }
@@ -1703,10 +1715,11 @@ html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg);
 /* per-window tweaks */
 .vis { display: flex; flex-wrap: wrap; gap: 12px 32px; align-items: center; }
 .counters { display: grid; gap: 8px; min-width: 150px; font-size: 1.35em; color: var(--c-stat-label); }
-.counters div { white-space: nowrap; justify-self: start; padding: 1px 6px; margin: 0 -6px; } .counters span { color: var(--c-stat-value); font-size: 1.2em; }
-.counters div.flash { animation: cflash 0.35s ease-out; }
-@keyframes cflash { from { background: var(--c-fg); color: var(--c-bg); } to { background: transparent; } }
-.counters div.flash span { animation: cflash 0.35s ease-out; }
+.counters div { white-space: nowrap; justify-self: start; }
+.counters span { display: inline-block; color: var(--c-stat-value); font-size: 1.2em; transform-origin: 50% 65%; }
+.counters span.pop { animation: cpop 0.3s steps(3, end); }   /* only the number pops (10 fps) */
+@keyframes cpop { from { transform: scale(1.45); opacity: 0.35; } to { transform: scale(1); opacity: 1; } }
+.counters span.cps1 { color: #e8890c; } .counters span.cps2 { color: #e02020; } .counters span.cps3 { color: #9b30ff; }
 #w-debugger .wbody { display: flex; flex-direction: column; }
 #w-debugger .wbody > * { flex: none; }
 #w-debugger #log { flex: 1 1 90px; height: auto; min-height: 70px; }
@@ -1737,7 +1750,39 @@ static const char* HTML_BODY = R"HTMLX(<body>
 <h1 class="brand">ESPdevice<span class="cur">_</span></h1>
 </div>
 </div>
-<div class="tbtns" id="tbtns"><button class="gear" id="themeBtn" onclick="wmToggle('theme')" title="Open / close the themes window">[ THEMES ]</button><button class="gear" id="gearBtn" onclick="wmToggle('settings')" title="Open / close the settings window">[ SETTINGS ]</button></div>
+<div class="tbtns" id="tbtns">
+<div class="tb"><button class="gear" id="themeBtn" onclick="menuToggle('theme')" title="Themes">[ THEMES ]</button>
+<div class="menu" id="menu-theme">
+<div class="row">
+  <select id="themeSelect" onchange="pickTheme()"></select>
+  <button onclick="copyTheme()">COPY</button>
+  <button onclick="renameTheme()">RENAME</button>
+  <button onclick="deleteTheme()">DELETE</button>
+</div>
+<p class="dim" id="themeNote"></p>
+<div class="preview">
+  <div class="key small"><div class="n">1</div></div>
+  <div class="key small on"><div class="n">1</div></div>
+</div>
+<div id="themeFields"></div>
+</div></div>
+<div class="tb"><button class="gear" id="gearBtn" onclick="menuToggle('settings')" title="Settings">[ SETTINGS ]</button>
+<div class="menu" id="menu-settings">
+<div class="setgrp">WINDOWS</div>
+<div class="row"><button onclick="resetLayout()">RESET WINDOW LAYOUT</button></div>
+<label class="opt"><input type="checkbox" id="optGearTop" onchange="wmSettingChanged()"> keep the settings and themes buttons on top of the windows</label>
+<div class="setgrp">COUNTERS</div>
+<div class="row"><button onclick="resetCounters()">RESET TOTAL / CPS</button></div>
+<label class="opt"><input type="checkbox" id="optCpsOff" onchange="wmSettingChanged()"> disable CPS counter</label>
+<label class="opt"><input type="checkbox" id="optCpsColor" onchange="wmSettingChanged()"> colored cps</label>
+<div class="setgrp">SOCIAL LINKS (bottom left)</div>
+<label class="opt"><input type="checkbox" id="optSocial_github" onchange="wmSettingChanged()"> GitHub</label>
+<label class="opt"><input type="checkbox" id="optSocial_youtube" onchange="wmSettingChanged()"> YouTube</label>
+<label class="opt"><input type="checkbox" id="optSocial_tiktok" onchange="wmSettingChanged()"> TikTok</label>
+<label class="opt"><input type="checkbox" id="optSocial_discord" onchange="wmSettingChanged()"> Discord</label>
+<p class="dim">More options will show up here in future versions. Saved in config\settings.json.</p>
+</div></div>
+</div>
 
 <div id="desk">
 
@@ -1755,7 +1800,7 @@ static const char* HTML_BODY = R"HTMLX(<body>
 <div class="vis">
   <div class="keys" id="keys"></div>
   <div class="counters">
-    <div>CPS: <span id="cCps">0</span></div>
+    <div id="cCpsRow">CPS: <span id="cCps">0</span></div>
     <div id="cTotalRow">Total: <span id="cTotal">0</span></div>
   </div>
 </div>
@@ -1798,34 +1843,6 @@ static const char* HTML_BODY = R"HTMLX(<body>
 <p class="dim">latency = keypad byte received by the service until SendInput returned (excludes USB transit time).</p>
 </div></section>
 
-<section class="win" id="w-theme" data-title="THEME" data-abbr="THM" data-closable="1"><div class="wbody">
-<div class="row">
-  <select id="themeSelect" onchange="pickTheme()"></select>
-  <button onclick="copyTheme()">COPY</button>
-  <button onclick="renameTheme()">RENAME</button>
-  <button onclick="deleteTheme()">DELETE</button>
-</div>
-<p class="dim" id="themeNote"></p>
-<div class="preview">
-  <div class="key small"><div class="n">1</div></div>
-  <div class="key small on"><div class="n">1</div></div>
-</div>
-<div id="themeFields"></div>
-</div></section>
-
-<section class="win" id="w-settings" data-title="SETTINGS" data-abbr="SET" data-closable="1"><div class="wbody">
-<div class="setgrp">WINDOWS</div>
-<div class="row"><button onclick="resetLayout()">RESET WINDOW LAYOUT</button></div>
-<label class="opt"><input type="checkbox" id="optGearTop" onchange="wmSettingChanged()"> keep the settings and themes buttons on top of the windows</label>
-<div class="setgrp">COUNTERS</div>
-<div class="row"><button onclick="resetCounters()">RESET CPS / TOTAL</button></div>
-<div class="setgrp">SOCIAL LINKS (bottom left)</div>
-<label class="opt"><input type="checkbox" id="optSocial_github" onchange="wmSettingChanged()"> GitHub</label>
-<label class="opt"><input type="checkbox" id="optSocial_youtube" onchange="wmSettingChanged()"> YouTube</label>
-<label class="opt"><input type="checkbox" id="optSocial_tiktok" onchange="wmSettingChanged()"> TikTok</label>
-<label class="opt"><input type="checkbox" id="optSocial_discord" onchange="wmSettingChanged()"> Discord</label>
-<p class="dim">More options will show up here in future versions. Saved in config\settings.json.</p>
-</div></section>
 
 </div>
 <nav class="socials" id="socials"></nav>
@@ -1945,6 +1962,7 @@ function applyState(st) {
   $("sRepeat").textContent = st.repeatMs + " ms";
   $("err").textContent = st.error ? ("ERROR: " + st.error) : "";
   if (typeof st.clicksTotal === "number") syncTotal(st.clicksTotal, st.clicksSince);
+  if (typeof wmFitFresh === "function") wmFitFresh();
 }
 )HTMLX";
 
@@ -2109,18 +2127,17 @@ static const char* HTML_JS_WM1 = R"HTMLX(
 // Every section is a floating window: drag it by the title bar (freeform, nothing snaps), resize from either bottom corner,
 // minimize with "v" (it becomes a small icon window; "^" opens it again).
 // Positions, sizes, minimized state and stacking order are saved to config\layout.json.
-const WIN_IDS = ["profile", "visualizer", "keybinds", "service", "debugger", "theme", "settings"];
-const WIN_ICON = { profile: "Profile", visualizer: "Visualizer", keybinds: "Keybinds", service: "Service", debugger: "Debugger", theme: "Theme", settings: "Settings" }; // config\icons\<Name>_icon.png
+const WIN_IDS = ["profile", "visualizer", "keybinds", "service", "debugger"];
+const WIN_ICON = { profile: "Profile", visualizer: "Visualizer", keybinds: "Keybinds", service: "Service", debugger: "Debugger" }; // config\icons\<Name>_icon.png
 const WORK_BOTTOM = 64;   // the bottom strip (links, status) under the divider line; default windows stay above it
-const HIDDEN = ["theme", "settings"];   // closed until you open them with the buttons at the top right
-const MIN_W = 200, MIN_H = 90, MINI_MIN = 36, MINI_W = 88, MINI_H = 64;
+const MIN_W = 200, MIN_H = 56, MINI_MIN = 36, MINI_W = 88, MINI_H = 64;
 const SOCIALS = [
   { id: "github",  label: "github",  icon: "Github",  url: "https://github.com/bagelsssss" },
   { id: "youtube", label: "youtube", icon: "Youtube", url: "https://www.youtube.com/@bagelsssss" },
   { id: "tiktok",  label: "tiktok",  icon: "Tiktok",  url: "https://www.tiktok.com/@bagel.sssss" },
   { id: "discord", label: "discord", icon: "Discord", url: "https://discord.com/users/920728577622835251" }
 ];
-const WM = { L: null, set: null, el: {}, mini: {}, timer: 0, chain: Promise.resolve(), schain: Promise.resolve(), fly: null };
+const WM = { fresh: false, fitted: false, L: null, set: null, el: {}, mini: {}, timer: 0, chain: Promise.resolve(), schain: Promise.resolve(), fly: null };
 
 const has = (o, k) => typeof k === "string" && Object.prototype.hasOwnProperty.call(o, k);
 const wmNum = (v, d) => (typeof v === "number" && isFinite(v) && Math.abs(v) < 100000) ? Math.round(v) : d;
@@ -2139,6 +2156,20 @@ function wmCleanFrame(f, d, minW, minH) {
   };
 }
 
+// the height a window needs for its content at a given width (measured off-screen)
+function wmNatural(id, w) {
+  const el = WM.el[id]; if (!el) return 0;
+  const keep = el.style.cssText;
+  el.style.cssText = "display:flex;visibility:hidden;left:0;top:0;width:" + w + "px;height:auto";
+  const h = Math.ceil(el.getBoundingClientRect().height);
+  el.style.cssText = keep;
+  return h;
+}
+function wmFitFresh() {   // first run (nothing saved yet): once the keybind rows exist, cut every window to its content
+  if (!WM.fresh || WM.fitted || !WM.L) return;
+  WM.fitted = true; WM.L = wmClean(null); wmPlaceAll();
+}
+
 function wmDefaults() {
   const vw = wmVW(), vh = wmVH();
   const hb = document.querySelector(".hdr").getBoundingClientRect();
@@ -2149,7 +2180,10 @@ function wmDefaults() {
     { x: x0, y: y0, ids: ["profile", "visualizer", "keybinds", "service"] },
     { x: Math.max(16, Math.min(x0 + colW + 16, vw - colW - 16)), y: y0, ids: ["debugger"] }
   ];
-  const H = { profile: 128, visualizer: 170, keybinds: 290, service: 90, debugger: 520, theme: 500, settings: 400 };
+  // new rule: windows are cut to their content, so there is no empty space (the debugger log gets some room)
+  const H = {};
+  WIN_IDS.forEach(id => { const nat = wmNatural(id, colW); H[id] = nat > 0 ? nat : 120; });
+  H.debugger = Math.max(H.debugger + 260, 380);
   const L = { v: 1, order: WIN_IDS.slice(), win: {} };
   const mk = (x, y, w, h, open) => ({
     n: { x: x, y: y, w: w, h: h, z: null, pw: 0, ph: 0 },
@@ -2157,20 +2191,23 @@ function wmDefaults() {
     min: false, open: open
   });
   cols.forEach(c => {
-    // a column that is taller than the browser window gets its windows shortened (never below MIN_H); their content scrolls
+    // a column taller than the browser window: the long windows (keybinds with its hint text, the debugger log) give up height first;
+    // the others keep their content height. Whatever still does not fit scrolls inside its window.
     const gap = 12, n = c.ids.length, avail = vh - c.y - WORK_BOTTOM - 4 - gap * (n - 1);
-    const sum = c.ids.reduce((t, id) => t + H[id], 0), floor = n * MIN_H;
-    const k = sum <= avail ? 1 : Math.max(0, (avail - floor) / (sum - floor));
+    const hs = {}; c.ids.forEach(id => { hs[id] = H[id]; });
+    let deficit = c.ids.reduce((t, id) => t + hs[id], 0) - avail;
+    ["keybinds", "debugger", "visualizer", "profile", "service"].forEach(id => {
+      if (deficit <= 0 || hs[id] === undefined) return;
+      const take = Math.min(Math.max(0, hs[id] - (id === "keybinds" ? 170 : MIN_H)), deficit);
+      hs[id] -= take; deficit -= take;
+    });
     let y = c.y;
     c.ids.forEach(id => {
-      const h = Math.max(MIN_H, Math.round(MIN_H + (H[id] - MIN_H) * k));
+      const h = Math.max(MIN_H, Math.round(hs[id]));
       L.win[id] = mk(c.x, y, colW, h, true);
       y += h + gap;
     });
   });
-  const sw = Math.min(360, Math.max(MIN_W, vw - 32));
-  L.win.settings = mk(Math.max(16, vw - sw - 16), 56, sw, Math.max(MIN_H, Math.min(H.settings, vh - 100)), false);
-  L.win.theme = mk(Math.max(16, vw - sw - 44), 84, sw, Math.max(MIN_H, Math.min(H.theme, vh - 130)), false);
   return L;
 }
 
@@ -2183,7 +2220,7 @@ function wmClean(raw) {
     if (!r) { L.win[id] = d; return; }
     L.win[id] = {
       n: wmCleanFrame(r.n, d.n, MIN_W, MIN_H), m: wmCleanFrame(r.m, d.m, MINI_MIN, MINI_MIN),
-      min: !!r.min, open: HIDDEN.indexOf(id) >= 0 ? !!r.open : true
+      min: !!r.min, open: true
     };
     L.win[id].m.z = null; L.win[id].m.pw = 0; L.win[id].m.ph = 0;
   });
@@ -2232,6 +2269,7 @@ function wmFront(id) {
 // ---- saving (config\layout.json): after every change, in order; flushed if the tab is closing ----
 function wmSave() {
   if (!WM.L) return;
+  WM.fresh = false;
   clearTimeout(WM.timer);
   WM.timer = setTimeout(() => { WM.timer = 0; wmSaveNow(false); }, 150);
 }
@@ -2308,12 +2346,35 @@ function wmBeginResize(ev, id, isMini, side) {
   grab.addEventListener("pointermove", move); grab.addEventListener("pointerup", end); grab.addEventListener("pointercancel", end);
 }
 
+// ---- Windows 11 style zoom + fade between a window and its icon window, at 10 fps ----
+const ANIM_MS = 400, ANIM_EASE = "steps(4, end)";
+function wmAnimOK() { return !(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches) && typeof Element.prototype.animate === "function"; }
+function wmGhost(id) {   // a picture of the window that does the flying
+  const g = WM.el[id].cloneNode(true);
+  g.removeAttribute("id"); g.querySelectorAll("[id]").forEach(n => n.removeAttribute("id"));
+  g.querySelectorAll("input, select, textarea, button").forEach(n => { n.tabIndex = -1; });
+  g.setAttribute("aria-hidden", "true"); g.classList.add("ghost");
+  g.style.pointerEvents = "none"; g.style.display = "flex"; g.style.zIndex = "5000";
+  $("desk").appendChild(g);
+  return g;
+}
+function wmFly(g, big, small, shrink, done) {
+  const t = "translate(" + Math.round(small.x + small.w / 2 - big.x - big.w / 2) + "px," + Math.round(small.y + small.h / 2 - big.y - big.h / 2) + "px) scale(" + (small.w / big.w) + "," + (small.h / big.h) + ")";
+  const k = shrink ? [{ transform: "none", opacity: 1 }, { transform: t, opacity: 0 }] : [{ transform: t, opacity: 0 }, { transform: "none", opacity: 1 }];
+  g.style.transformOrigin = "50% 50%";
+  const fin = () => { if (g.parentNode) g.remove(); if (done) done(); };
+  try { g.animate(k, { duration: ANIM_MS, easing: ANIM_EASE, fill: "both" }).onfinish = fin; } catch (e) { fin(); return; }
+  setTimeout(fin, ANIM_MS + 150);
+}
+
 // ---- minimize / restore: the icon window and the window follow each other ----
 function wmMinimize(id) {
   const W = WM.L.win[id], r = wmResolve(W.n, MIN_W, MIN_H);
+  const ghost = wmAnimOK() ? wmGhost(id) : null;
   W.m.x = r.x; W.m.y = r.y;                       // the icon window appears where the window is
   W.min = true;
   wmPlaceAll(); wmSave();
+  if (ghost) wmFly(ghost, r, wmResolve(W.m, MINI_MIN, MINI_MIN), true);   // the window zooms and fades into its icon
 }
 function wmRestore(id) {
   const W = WM.L.win[id], mr = wmResolve(W.m, MINI_MIN, MINI_MIN), nr = wmResolve(W.n, MIN_W, MIN_H);
@@ -2325,18 +2386,42 @@ function wmRestore(id) {
   W.min = false;
   const o = WM.L.order; o.splice(o.indexOf(id), 1); o.push(id);
   wmPlaceAll(); wmSave();
+  if (wmAnimOK()) {                               // the window zooms and fades out of its icon
+    const el = WM.el[id], ghost = wmGhost(id);
+    el.style.visibility = "hidden";
+    wmFly(ghost, wmResolve(W.n, MIN_W, MIN_H), mr, false, () => { el.style.visibility = ""; });
+  }
 }
-function wmToggle(id) {   // the buttons at the top right: open or close the settings / themes window
-  const W = WM.L.win[id], o = WM.L.order;
-  if (W.open) W.open = false;
-  else { W.open = true; W.min = false; o.splice(o.indexOf(id), 1); o.push(id); }
-  wmPlaceAll(); wmSave();
+
+// ---- pull-down menus (THEMES, SETTINGS) ----
+const MENU_BTN = { theme: "themeBtn", settings: "gearBtn" };
+let menuCur = null;
+function menuSyncZ() { $("tbtns").classList.toggle("open", !!menuCur || Object.keys(MENU_BTN).some(i => $("menu-" + i).style.display === "block")); }
+function menuShow(id) {
+  const m = $("menu-" + id); clearTimeout(m._t);
+  m.classList.remove("closing"); m.style.display = "block"; void m.offsetWidth; m.classList.add("opening");
+  $(MENU_BTN[id]).classList.add("on");
 }
+function menuHide(id) {
+  const m = $("menu-" + id); if (m.style.display !== "block") return;
+  $(MENU_BTN[id]).classList.remove("on");
+  m.classList.remove("opening"); m.classList.add("closing"); clearTimeout(m._t);
+  m._t = setTimeout(() => { m.style.display = "none"; m.classList.remove("closing"); menuSyncZ(); }, wmAnimOK() ? ANIM_MS : 0);
+}
+function menuToggle(id) {   // only one is open at a time
+  const was = menuCur;
+  if (was) menuHide(was);
+  menuCur = (was === id) ? null : id;
+  if (menuCur) menuShow(id);
+  menuSyncZ();
+}
+function menuClose() { if (menuCur) { menuHide(menuCur); menuCur = null; menuSyncZ(); } }
+document.addEventListener("pointerdown", e => { if (menuCur && !e.target.closest(".tb")) menuClose(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") menuClose(); });
+
 function resetLayout() {
   if (!confirm("Put every window back in its default place and size?")) return;
-  const keep = HIDDEN.map(id => WM.L.win[id].open);
   WM.L = wmClean(null);
-  HIDDEN.forEach((id, i) => { WM.L.win[id].open = keep[i]; });
   wmPlaceAll(); wmSaveNow(false);
 }
 
@@ -2356,11 +2441,6 @@ function wmBuild() {
     wi.onload = () => { wi.style.display = ""; };                         // shown only once your icon file exists
     wi.src = "/api/icon/" + WIN_ICON[id] + "?v=" + Date.now();
     bar.appendChild(wi);
-    if (el.dataset.closable) {
-      const cb = document.createElement("button"); cb.className = "wbtn"; cb.textContent = "x"; cb.title = "Close"; cb.setAttribute("aria-label", "Close " + title);
-      cb.onclick = () => wmToggle(id);
-      bar.appendChild(cb);
-    }
     el.insertBefore(bar, el.firstChild);
     const rz = document.createElement("div"); rz.className = "rsz"; rz.title = "Drag to resize";
     const rzr = document.createElement("div"); rzr.className = "rsz r"; rzr.title = "Drag to resize";
@@ -2392,16 +2472,20 @@ function wmBuild() {
 
 // ---- settings (config\settings.json) ----
 function wmCleanSettings(raw) {
-  const s = { gearTop: true, social: {} };
+  const s = { gearTop: true, cpsOff: false, cpsColor: true, social: {} };
   if (raw && typeof raw === "object") {
     if (typeof raw.gearTop === "boolean") s.gearTop = raw.gearTop;
+    if (typeof raw.cpsOff === "boolean") s.cpsOff = raw.cpsOff;
+    if (typeof raw.cpsColor === "boolean") s.cpsColor = raw.cpsColor;
   }
   SOCIALS.forEach(x => { s.social[x.id] = !(raw && raw.social && typeof raw.social === "object" && raw.social[x.id] === false); });
   return s;
 }
 function wmApplySettings() {
   const s = WM.set;
-  $("optGearTop").checked = s.gearTop;
+  $("optGearTop").checked = s.gearTop; $("optCpsOff").checked = s.cpsOff; $("optCpsColor").checked = s.cpsColor;
+  $("cCpsRow").style.display = s.cpsOff ? "none" : "";
+  if (typeof paintCounters === "function") paintCounters();
   $("tbtns").style.zIndex = s.gearTop ? "3" : "1";   // 3 = above the windows, 1 = windows can cover it
   SOCIALS.forEach(x => { $("optSocial_" + x.id).checked = s.social[x.id]; });
   const nav = $("socials"); nav.textContent = "";
@@ -2418,7 +2502,7 @@ function wmApplySettings() {
 }
 function wmSettingChanged() {
   const s = WM.set;
-  s.gearTop = $("optGearTop").checked;
+  s.gearTop = $("optGearTop").checked; s.cpsOff = $("optCpsOff").checked; s.cpsColor = $("optCpsColor").checked;
   SOCIALS.forEach(x => { s.social[x.id] = $("optSocial_" + x.id).checked; });
   wmApplySettings();
   const body = JSON.stringify(s);
@@ -2430,6 +2514,7 @@ async function wmInit() {
   const get = async u => { try { const r = await fetch(u); if (!r.ok) return null; return JSON.parse(await r.text()); } catch (e) { return null; } };
   const res = await Promise.all([get("/api/layout"), get("/api/settings")]);
   WM.set = wmCleanSettings(res[1]);
+  WM.fresh = !(res[0] && typeof res[0] === "object" && res[0].win);
   WM.L = wmClean(res[0]);
   wmApplySettings();
   $("divider").style.bottom = WORK_BOTTOM + "px";
@@ -2693,22 +2778,29 @@ async function loadArt() {
 // ---- CPS (presses in the last second) and Total (all presses, counted by the app and saved across restarts) ----
 let replayUntil = 0, cpsTimes = [], cTotal = 0, cSrv = -1;
 function paintCounters() {
-  const now = performance.now();
+  const now = performance.now(), st = (typeof WM !== "undefined" && WM.set) ? WM.set : { cpsOff: false, cpsColor: true };
   while (cpsTimes.length && now - cpsTimes[0] > 1000) cpsTimes.shift();
-  const c = $("cCps"), t = $("cTotal"), cs = String(cpsTimes.length), ts = cTotal.toLocaleString("en-US");
+  const n = st.cpsOff ? 0 : cpsTimes.length;
+  const c = $("cCps"), t = $("cTotal"), cs = String(n), ts = cTotal.toLocaleString("en-US");
   if (c.textContent !== cs) c.textContent = cs;
   if (t.textContent !== ts) t.textContent = ts;
+  // 0-5 normal colour, 5-10 orange, 10-15 red, 15+ purple (can be switched off in SETTINGS)
+  const k = (st.cpsColor && n >= 15) ? 3 : (st.cpsColor && n >= 10) ? 2 : (st.cpsColor && n >= 5) ? 1 : 0;
+  c.className = (c.className.indexOf("pop") >= 0 ? "pop " : "") + (k ? "cps" + k : "");
 }
 function cpsHit() {
-  cpsTimes.push(performance.now()); cTotal++; paintCounters();
-  document.querySelectorAll(".counters div").forEach(d => { d.classList.remove("flash"); void d.offsetWidth; d.classList.add("flash"); });   // flash on every press
+  const off = typeof WM !== "undefined" && WM.set && WM.set.cpsOff;
+  if (!off) cpsTimes.push(performance.now());
+  cTotal++; paintCounters();
+  const sp = off ? [$("cTotal")] : [$("cCps"), $("cTotal")];   // only the numbers pop
+  sp.forEach(e => { e.classList.remove("pop"); void e.offsetWidth; e.classList.add("pop"); });
 }
 function syncTotal(total, since) {
   if (total !== cSrv) { cSrv = total; cTotal = total; paintCounters(); }
   if (since > 0) $("cTotalRow").title = "since " + new Date(since * 1000).toLocaleDateString();
 }
 async function resetCounters() {
-  if (!confirm("Reset the CPS and Total counters to zero?")) return;
+  if (!confirm("Reset the Total and CPS counters to zero?")) return;
   cpsTimes = []; applyState(await api("/api/counters/reset", {}));
 }
 setInterval(paintCounters, 100);
