@@ -1669,18 +1669,19 @@ html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg);
 #desk { position: fixed; left: 0; top: 0; right: 0; bottom: 0; z-index: 2; pointer-events: none; visibility: hidden; }
 #desk.ready { visibility: visible; }
 #desk > * { pointer-events: auto; }
-.win { position: absolute; display: flex; flex-direction: column; background: var(--c-bg); border: 1px solid var(--c-border); min-width: 0; min-height: 0; overflow: hidden; padding-bottom: 16px; }
+.win { position: absolute; display: flex; flex-direction: column; background: var(--c-bg); border: 1px solid var(--c-border); min-width: 0; min-height: 0; overflow: hidden; padding-bottom: 12px; }
 .wbar { flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 8px 4px 8px; cursor: move; user-select: none; -webkit-user-select: none; touch-action: none; }
 .wbar h2 { margin: 0; font-size: 1em; font-weight: normal; color: var(--c-heading); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .win.front .wbar h2 { color: var(--c-fg); }
 .grip { flex: none; width: 1.5em; height: 1.5em; border: 1px solid var(--c-border); display: flex; align-items: center; justify-content: center; font-size: 0.8em; line-height: 1; color: var(--c-dim); }
 .wbtn { flex: none; width: 1.7em; height: 1.7em; padding: 0; display: flex; align-items: center; justify-content: center; line-height: 1; cursor: pointer; }
-.wbody { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 12px 6px 12px; scrollbar-width: thin; scrollbar-color: var(--c-border) var(--c-bg); }
-.rsz { position: absolute; left: 0; bottom: 0; width: 16px; height: 16px; cursor: nesw-resize; touch-action: none; z-index: 2; }
-.rsz::after { content: ""; position: absolute; left: 3px; bottom: 3px; width: 8px; height: 8px; border-left: 2px solid var(--c-dim); border-bottom: 2px solid var(--c-dim); }
+.wbody { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 12px 2px 12px; scrollbar-width: thin; scrollbar-color: var(--c-border) var(--c-bg); }
+.rsz { position: absolute; left: 0; bottom: 0; width: 12px; height: 12px; cursor: nesw-resize; touch-action: none; z-index: 2; }
+.rsz::after { content: ""; position: absolute; left: 2px; bottom: 2px; width: 7px; height: 7px; border-left: 2px solid var(--c-dim); border-bottom: 2px solid var(--c-dim); }
 .rsz:hover::after { border-color: var(--c-fg); }
 .rsz.r { left: auto; right: 0; cursor: nwse-resize; }
-.rsz.r::after { left: auto; right: 3px; border-left: 0; border-right: 2px solid var(--c-dim); }
+.rsz.r::after { left: auto; right: 2px; border-left: 0; border-right: 2px solid var(--c-dim); }
+.wbody > :last-child { margin-bottom: 0; }
 .wicon { flex: none; width: 22px; height: 22px; object-fit: contain; pointer-events: none; }
 /* minimized: a small icon window */
 .mini { position: absolute; display: none; background: var(--c-bg); border: 1px solid var(--c-border); cursor: move; touch-action: none; user-select: none; -webkit-user-select: none; overflow: hidden; }
@@ -1697,11 +1698,18 @@ html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg);
 .menu { position: absolute; right: 0; top: 100%; margin-top: -1px; display: none; background: var(--c-bg); border: 1px solid var(--c-border); padding: 6px 14px 14px 14px; overflow: auto; width: 360px; max-width: calc(100vw - 32px); max-height: calc(100vh - 116px); transform-origin: 100% 0; scrollbar-width: thin; scrollbar-color: var(--c-border) var(--c-bg); }
 #menu-theme { width: 480px; }
 .err:empty { display: none; }
-.menu.opening { animation: mopen 0.4s steps(4, end) both; }
-.menu.closing { animation: mclose 0.4s steps(4, end) both; }
-@keyframes mopen { from { transform: scale(0.82); opacity: 0; } to { transform: none; opacity: 1; } }
+/* opening: a thin bar spreads out from the button along the x axis, then the panel grows downward (30 fps = 12 steps in 0.4 s) */
+.menu.opening { animation: mopen 0.4s linear both; }
+@keyframes mopen {
+  0% { clip-path: inset(0 0 calc(100% - 6px) 100%); animation-timing-function: steps(5, end); }
+  40% { clip-path: inset(0 0 calc(100% - 6px) 0); animation-timing-function: steps(7, end); }
+  100% { clip-path: inset(0 0 0 0); }
+}
+/* closing: shrink and fade out */
+.menu.closing { animation: mclose 0.4s steps(12, end) both; }
 @keyframes mclose { from { transform: none; opacity: 1; } to { transform: scale(0.82); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .menu.opening, .menu.closing { animation: none; } }
+html.noanim .menu.opening, html.noanim .menu.closing, html.noanim .counters span.pop { animation: none !important; }   /* SETTINGS > disable animations */
 .gear img { display: block; width: 24px; height: 24px; object-fit: contain; pointer-events: none; }
 .gear.hasicon { padding: 3px; background: transparent; border-color: transparent; }
 .gear.hasicon:hover { background: var(--c-btn-hover-bg); border-color: var(--c-btn-border); }
@@ -1717,8 +1725,8 @@ html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg);
 .counters { display: grid; gap: 8px; min-width: 150px; font-size: 1.35em; color: var(--c-stat-label); }
 .counters div { white-space: nowrap; justify-self: start; }
 .counters span { display: inline-block; color: var(--c-stat-value); font-size: 1.2em; transform-origin: 50% 65%; }
-.counters span.pop { animation: cpop 0.3s steps(3, end); }   /* only the number pops (10 fps) */
-@keyframes cpop { from { transform: scale(1.45); opacity: 0.35; } to { transform: scale(1); opacity: 1; } }
+.counters span.pop { animation: cpop 0.3s steps(9, end); }   /* only the number pops: size only, never see-through (30 fps) */
+@keyframes cpop { from { transform: scale(1.45); } to { transform: scale(1); } }
 .counters span.cps1 { color: #e8890c; } .counters span.cps2 { color: #e02020; } .counters span.cps3 { color: #9b30ff; }
 #w-debugger .wbody { display: flex; flex-direction: column; }
 #w-debugger .wbody > * { flex: none; }
@@ -1775,6 +1783,8 @@ static const char* HTML_BODY = R"HTMLX(<body>
 <div class="row"><button onclick="resetCounters()">RESET TOTAL / CPS</button></div>
 <label class="opt"><input type="checkbox" id="optCpsOff" onchange="wmSettingChanged()"> disable CPS counter</label>
 <label class="opt"><input type="checkbox" id="optCpsColor" onchange="wmSettingChanged()"> colored cps</label>
+<div class="setgrp">ANIMATIONS</div>
+<label class="opt"><input type="checkbox" id="optAnimOff" onchange="wmSettingChanged()"> disable animations</label>
 <div class="setgrp">SOCIAL LINKS (bottom left)</div>
 <label class="opt"><input type="checkbox" id="optSocial_github" onchange="wmSettingChanged()"> GitHub</label>
 <label class="opt"><input type="checkbox" id="optSocial_youtube" onchange="wmSettingChanged()"> YouTube</label>
@@ -2165,6 +2175,14 @@ function wmNatural(id, w) {
   el.style.cssText = keep;
   return h;
 }
+function wmNaturalW(id) {   // the width a window needs for its content, with nothing wrapping
+  const el = WM.el[id]; if (!el) return 0;
+  const keep = el.style.cssText;
+  el.style.cssText = "display:flex;visibility:hidden;left:0;top:0;width:max-content;height:auto";
+  const w = Math.ceil(el.getBoundingClientRect().width) + 1;
+  el.style.cssText = keep;
+  return w;
+}
 function wmFitFresh() {   // first run (nothing saved yet): once the keybind rows exist, cut every window to its content
   if (!WM.fresh || WM.fitted || !WM.L) return;
   WM.fitted = true; WM.L = wmClean(null); wmPlaceAll();
@@ -2181,8 +2199,13 @@ function wmDefaults() {
     { x: Math.max(16, Math.min(x0 + colW + 16, vw - colW - 16)), y: y0, ids: ["debugger"] }
   ];
   // new rule: windows are cut to their content, so there is no empty space (the debugger log gets some room)
-  const H = {};
-  WIN_IDS.forEach(id => { const nat = wmNatural(id, colW); H[id] = nat > 0 ? nat : 120; });
+  // width = what the content needs (up to the column); KEYBINDS and DEBUGGER always get the full column
+  const W = {}, H = {};
+  WIN_IDS.forEach(id => {
+    const nw = (id === "keybinds" || id === "debugger") ? colW : Math.min(colW, Math.max(MIN_W, wmNaturalW(id)));
+    W[id] = nw > 0 ? nw : colW;
+    const nat = wmNatural(id, W[id]); H[id] = nat > 0 ? nat : 120;
+  });
   H.debugger = Math.max(H.debugger + 260, 380);
   const L = { v: 1, order: WIN_IDS.slice(), win: {} };
   const mk = (x, y, w, h, open) => ({
@@ -2204,7 +2227,7 @@ function wmDefaults() {
     let y = c.y;
     c.ids.forEach(id => {
       const h = Math.max(MIN_H, Math.round(hs[id]));
-      L.win[id] = mk(c.x, y, colW, h, true);
+      L.win[id] = mk(c.x, y, W[id], h, true);
       y += h + gap;
     });
   });
@@ -2346,9 +2369,9 @@ function wmBeginResize(ev, id, isMini, side) {
   grab.addEventListener("pointermove", move); grab.addEventListener("pointerup", end); grab.addEventListener("pointercancel", end);
 }
 
-// ---- Windows 11 style zoom + fade between a window and its icon window, at 10 fps ----
-const ANIM_MS = 400, ANIM_EASE = "steps(4, end)";
-function wmAnimOK() { return !(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches) && typeof Element.prototype.animate === "function"; }
+// ---- Windows 11 style zoom + fade between a window and its icon window, at 30 fps ----
+const ANIM_MS = 400, ANIM_EASE = "steps(12, end)";   // 30 fps
+function wmAnimOK() { return !(WM.set && WM.set.animOff) && !(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches) && typeof Element.prototype.animate === "function"; }
 function wmGhost(id) {   // a picture of the window that does the flying
   const g = WM.el[id].cloneNode(true);
   g.removeAttribute("id"); g.querySelectorAll("[id]").forEach(n => n.removeAttribute("id"));
@@ -2472,18 +2495,20 @@ function wmBuild() {
 
 // ---- settings (config\settings.json) ----
 function wmCleanSettings(raw) {
-  const s = { gearTop: true, cpsOff: false, cpsColor: true, social: {} };
+  const s = { gearTop: true, cpsOff: false, cpsColor: true, animOff: false, social: {} };
   if (raw && typeof raw === "object") {
     if (typeof raw.gearTop === "boolean") s.gearTop = raw.gearTop;
     if (typeof raw.cpsOff === "boolean") s.cpsOff = raw.cpsOff;
     if (typeof raw.cpsColor === "boolean") s.cpsColor = raw.cpsColor;
+    if (typeof raw.animOff === "boolean") s.animOff = raw.animOff;
   }
   SOCIALS.forEach(x => { s.social[x.id] = !(raw && raw.social && typeof raw.social === "object" && raw.social[x.id] === false); });
   return s;
 }
 function wmApplySettings() {
   const s = WM.set;
-  $("optGearTop").checked = s.gearTop; $("optCpsOff").checked = s.cpsOff; $("optCpsColor").checked = s.cpsColor;
+  $("optGearTop").checked = s.gearTop; $("optCpsOff").checked = s.cpsOff; $("optCpsColor").checked = s.cpsColor; $("optAnimOff").checked = s.animOff;
+  document.documentElement.classList.toggle("noanim", s.animOff);
   $("cCpsRow").style.display = s.cpsOff ? "none" : "";
   if (typeof paintCounters === "function") paintCounters();
   $("tbtns").style.zIndex = s.gearTop ? "3" : "1";   // 3 = above the windows, 1 = windows can cover it
@@ -2502,7 +2527,7 @@ function wmApplySettings() {
 }
 function wmSettingChanged() {
   const s = WM.set;
-  s.gearTop = $("optGearTop").checked; s.cpsOff = $("optCpsOff").checked; s.cpsColor = $("optCpsColor").checked;
+  s.gearTop = $("optGearTop").checked; s.cpsOff = $("optCpsOff").checked; s.cpsColor = $("optCpsColor").checked; s.animOff = $("optAnimOff").checked;
   SOCIALS.forEach(x => { s.social[x.id] = $("optSocial_" + x.id).checked; });
   wmApplySettings();
   const body = JSON.stringify(s);
