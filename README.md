@@ -261,9 +261,6 @@ app/espdevice.rc, espdevice.ico    Tray/exe icon
 installer/ESPdevice.iss            Inno Setup script for ESPdevice-Setup.exe
 .github/workflows/build.yml        Builds the exe, installer and portable zip; attaches them to releases
 ```
-
-To publish a new version: push a tag like `v1.1.1`. GitHub Actions writes the version number into `app/version.h`, builds everything and attaches it to a Release.
-
 ## License
 
 The code is licensed under the [GNU GPL v3.0](LICENSE). The logo and icon artwork are made by bagelings and are all rights reserved.
