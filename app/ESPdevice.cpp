@@ -66,8 +66,11 @@ namespace fs = std::filesystem;
 
 constexpr DWORD BAUD_RATE = 921600;
 constexpr BYTE ID_QUERY_BYTE = 0xFE;
-constexpr const char* DEVICE_ID = "3KEY";
-constexpr int NUM_KEYS = 3;
+constexpr const char* DEVICE_ID = "3KEY";    // the original firmware
+constexpr const char* DEVICE_ID8 = "8KEY";   // the 8-key capable firmware (works with 3 keys too)
+constexpr int NUM_KEYS = 8;                  // keys the app can hold (profiles always store all 8 bindings)
+static std::atomic<int> g_activeKeys{ 3 };   // keys in use: 3, or 8 with SETTINGS > 8-key support (experimental)
+static std::atomic<bool> g_keysChanged{ false };
 constexpr int MAX_COMBO = 4;
 constexpr double KEY_TIMEOUT_SECONDS = 1.5; // force-release if the board goes silent while a key is held
 constexpr int MAX_PROFILES = 99;
@@ -342,7 +345,7 @@ static std::mutex g_profileMutex;
 static std::vector<Profile> g_profiles;
 static int g_activeIndex = 0;
 
-static const char* DEFAULT_BINDINGS[NUM_KEYS] = { "A", "S", "D" };
+static const char* DEFAULT_BINDINGS[NUM_KEYS] = { "A", "S", "D", "F", "G", "H", "J", "K" };
 
 static Profile DefaultProfile(const std::string& name) {
     Profile p;
@@ -456,6 +459,18 @@ static void SaveCounters(bool force) {
     WriteFileAtomic(g_configDir / L"counters.json", o.str());
     g_clicksSaved = t;
 }
+// 8-key mode lives in the page settings (config\settings.json, "eightKeys":true); the app reads the flag here
+static void ApplyKeyMode(const std::string& settingsJson) {
+    int n = settingsJson.find("\"eightKeys\":true") != std::string::npos ? 8 : 3;
+    if (g_activeKeys.exchange(n) != n) g_keysChanged = true;
+}
+static void LoadKeyMode() {
+    std::ifstream f(g_configDir / L"settings.json", std::ios::binary);
+    if (!f.is_open()) return;
+    std::ostringstream ss; ss << f.rdbuf();
+    ApplyKeyMode(ss.str());
+}
+
 static void LoadCounters() {
     std::string txt;
     {
@@ -692,7 +707,7 @@ static void ReleaseAllKeys() {
 }
 
 static void HandleByte(BYTE b, double now, int64_t tRecv) {
-    if (b < 1 || b > NUM_KEYS * 2) return; // identity replies / anything else
+    if (b < 1 || b > g_activeKeys.load() * 2) return; // identity replies / keys that are not enabled / anything else
     int idx = (b - 1) / 2;
     bool isPress = (b & 1) != 0;
 
@@ -735,6 +750,7 @@ static void HandleByte(BYTE b, double now, int64_t tRecv) {
 // Runs on every wake of the device thread: stale-key timeout, pause /
 // shutdown release, typematic repeat.
 static void ServiceTick(double now) {
+    if (g_keysChanged.exchange(false)) ReleaseAllKeys();   // 3-key / 8-key mode was switched: let go of everything
     bool blocked = g_paused.load() || !g_running.load();
     for (int idx = 0; idx < NUM_KEYS; idx++) {
         if (!g_held[idx]) continue;
@@ -813,7 +829,7 @@ static bool ProbeHandle(HANDLE h) {
         if (!ReadFile(h, buf, sizeof(buf), &n, nullptr)) return false;
         if (n > 0) {
             reply.append(buf, n);
-            if (reply.find(DEVICE_ID) != std::string::npos && reply.find('\n') != std::string::npos) return true;
+            if ((reply.find(DEVICE_ID) != std::string::npos || reply.find(DEVICE_ID8) != std::string::npos) && reply.find('\n') != std::string::npos) return true;
         }
     }
     return false;
@@ -921,7 +937,7 @@ static std::string BuildStateJsonLocked(const std::string& error) {
     uint64_t cnt = g_latCount.load();
     uint64_t avg = cnt ? g_latSum.load() / cnt : 0;
 
-    out << "],\"connected\":" << (g_connected ? "true" : "false")
+    out << "],\"keys\":" << g_activeKeys.load() << ",\"connected\":" << (g_connected ? "true" : "false")
         << ",\"port\":\"" << JsonEscape(port) << "\""
         << ",\"paused\":" << (g_paused ? "true" : "false")
         << ",\"maxProfiles\":" << MAX_PROFILES
@@ -1172,6 +1188,7 @@ static void HandleRequest(SOCKET client) {
             const wchar_t* fn = (path == "/api/layout") ? L"layout.json" : L"settings.json";
             std::lock_guard<std::mutex> lk(g_cfgMutex);
             WriteFileAtomic(g_configDir / fn, body);
+            if (path == "/api/settings") ApplyKeyMode(body);
             response = HttpResponse("200 OK", "application/json", "{\"ok\":true}");
         }
     }
@@ -1497,6 +1514,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
 
     InitPaths();
     LoadCounters();
+    LoadKeyMode();
     SetUnhandledExceptionFilter(CrashFilter);
     InitClock();
     for (int i = 0; i < NUM_KEYS; i++) { g_held[i] = g_sent[i] = false; g_nextRepeat[i] = -1; g_lastSeen[i] = 0; g_heldView[i] = false; }
@@ -1698,6 +1716,10 @@ html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg);
 .menu { position: absolute; right: 0; top: 100%; margin-top: -1px; display: none; background: var(--c-bg); border: 1px solid var(--c-border); padding: 6px 14px 14px 14px; overflow: auto; width: 360px; max-width: calc(100vw - 32px); max-height: calc(100vh - 116px); transform-origin: 100% 0; scrollbar-width: thin; scrollbar-color: var(--c-border) var(--c-bg); }
 #menu-theme { width: 480px; }
 .err:empty { display: none; }
+.keys.k8 { gap: 8px; }
+.keys.k8 .key { width: 56px; height: 56px; }
+.keys.k8 .key .n { font-size: 1.2em; } .keys.k8 .key .b { font-size: 0.7em; margin-top: 2px; max-width: 48px; }
+.mode8 { position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 1; margin: 0; white-space: nowrap; color: var(--c-status); }
 /* opening: a thin bar spreads out from the button along the x axis, then the panel grows downward (30 fps = 12 steps in 0.4 s) */
 .menu.opening { animation: mopen 0.4s linear both; }
 @keyframes mopen {
@@ -1779,6 +1801,9 @@ static const char* HTML_BODY = R"HTMLX(<body>
 <div class="setgrp">WINDOWS</div>
 <div class="row"><button onclick="resetLayout()">RESET WINDOW LAYOUT</button></div>
 <label class="opt"><input type="checkbox" id="optGearTop" onchange="wmSettingChanged()"> keep the settings and themes buttons on top of the windows</label>
+<div class="setgrp">KEYPAD</div>
+<label class="opt"><input type="checkbox" id="optEight" onchange="wmSettingChanged()"> 8-key support (experimental)</label>
+<p class="dim">Needs the 8-key firmware and 5 extra keys (see the README).</p>
 <div class="setgrp">COUNTERS</div>
 <div class="row"><button onclick="resetCounters()">RESET TOTAL / CPS</button></div>
 <label class="opt"><input type="checkbox" id="optCpsOff" onchange="wmSettingChanged()"> disable CPS counter</label>
@@ -1856,6 +1881,7 @@ static const char* HTML_BODY = R"HTMLX(<body>
 
 </div>
 <nav class="socials" id="socials"></nav>
+<p class="mode8" id="mode8" style="display:none">[8-key Mode Active]</p>
 <div class="br">
 <p class="status" id="status">connecting to service...</p>
 <div class="credit">made by bagelings, assisted by claude &middot; v@@VER@@</div>
@@ -1882,7 +1908,8 @@ const KEY_NAMES = [
 const $ = id => document.getElementById(id);
 const ART_MAX_W = 300, ART_MAX_H = 200; // px box the title art is fitted into (edit to taste)
 let S = null;
-let held = [false, false, false];
+let held = [false, false, false, false, false, false, false, false];
+function keyCount() { return (typeof WM !== "undefined" && WM.set && WM.set.eightKeys) ? 8 : 3; }   // 3 keys, or 8 in 8-key mode
 let lastSig = "";
 let frozen = false;
 
@@ -1896,7 +1923,7 @@ async function api(path, body) {
 function us(v) { return v + " us"; }
 
 function paintKeys() {
-  for (let k = 0; k < 3; k++) {
+  for (let k = 0; k < 8; k++) {
     const el = $("key" + k);
     if (el) el.classList.toggle("on", !!held[k]);
   }
@@ -1905,7 +1932,8 @@ function paintKeys() {
 function buildKeyBoxes() {
   const box = $("keys");
   box.innerHTML = "";
-  for (let k = 0; k < 3; k++) {
+  box.classList.toggle("k8", keyCount() === 8);
+  for (let k = 0; k < keyCount(); k++) {
     const d = document.createElement("div");
     d.className = "key"; d.id = "key" + k;
     const n = document.createElement("div"); n.className = "n"; n.textContent = String(k + 1);
@@ -1913,6 +1941,12 @@ function buildKeyBoxes() {
     d.appendChild(n); d.appendChild(b);
     box.appendChild(d);
   }
+}
+
+function applyKeyCount() {   // 3 <-> 8 keys: rebuild the key boxes and the binding rows
+  buildKeyBoxes();
+  if (S && S.profiles && S.profiles.length) renderProfiles();
+  paintKeys();
 }
 
 function renderProfiles() {
@@ -1929,7 +1963,7 @@ function renderProfiles() {
   const active = S.profiles[S.activeIndex];
   const rows = $("bindRows");
   rows.innerHTML = "";
-  for (let k = 0; k < 3; k++) {
+  for (let k = 0; k < keyCount(); k++) {
     const tr = document.createElement("tr");
     const td0 = document.createElement("td"); td0.textContent = "KEY " + (k + 1);
     const td1 = document.createElement("td");
@@ -2182,6 +2216,28 @@ function wmNaturalW(id) {   // the width a window needs for its content, with no
   const w = Math.ceil(el.getBoundingClientRect().width) + 1;
   el.style.cssText = keep;
   return w;
+}
+// 3 <-> 8 keys changes how tall VISUALIZER and KEYBINDS need to be: refit them and move the windows below them along
+function wmRefitKeys() {
+  const L = WM.L; if (!L) return;
+  const vw = wmVW(), vh = wmVH();
+  ["visualizer", "keybinds"].forEach(id => {
+    const W = L.win[id], r = wmResolve(W.n, MIN_W, MIN_H);
+    const w = (id === "visualizer" && keyCount() === 8) ? Math.max(r.w, Math.min(580, vw - r.x - 16)) : r.w;
+    const nat = wmNatural(id, w);
+    const below = W.min ? [] : WIN_IDS.filter(o => {   // windows under this one (same columns): they follow
+      if (o === id || L.win[o].min) return false;
+      const q = wmResolve(L.win[o].n, MIN_W, MIN_H);
+      return q.y >= r.y + r.h - 1 && q.x < r.x + w && q.x + q.w > r.x;
+    }).map(o => L.win[o]);
+    const lowest = Math.max.apply(null, [r.y + r.h].concat(below.map(V => { const q = wmResolve(V.n, MIN_W, MIN_H); return q.y + q.h; })));
+    let nh = Math.max(MIN_H, nat), d = nh - r.h;
+    const over = lowest + d - (vh - WORK_BOTTOM - 4);                // would the column reach below the divider line?
+    if (id === "keybinds" && over > 0) { nh = Math.max(Math.min(nh, 170), nh - over); d = nh - r.h; }   // KEYBINDS gives up height first (it scrolls)
+    W.n.w = w; W.n.h = nh; W.n.z = null; W.n.pw = 0; W.n.ph = 0;
+    below.forEach(V => { V.n.y = Math.max(0, wmResolve(V.n, MIN_W, MIN_H).y + d); V.n.z = null; });
+  });
+  wmPlaceAll(); wmSave();
 }
 function wmFitFresh() {   // first run (nothing saved yet): once the keybind rows exist, cut every window to its content
   if (!WM.fresh || WM.fitted || !WM.L) return;
@@ -2495,12 +2551,13 @@ function wmBuild() {
 
 // ---- settings (config\settings.json) ----
 function wmCleanSettings(raw) {
-  const s = { gearTop: true, cpsOff: false, cpsColor: true, animOff: false, social: {} };
+  const s = { gearTop: true, cpsOff: false, cpsColor: true, animOff: false, eightKeys: false, social: {} };
   if (raw && typeof raw === "object") {
     if (typeof raw.gearTop === "boolean") s.gearTop = raw.gearTop;
     if (typeof raw.cpsOff === "boolean") s.cpsOff = raw.cpsOff;
     if (typeof raw.cpsColor === "boolean") s.cpsColor = raw.cpsColor;
     if (typeof raw.animOff === "boolean") s.animOff = raw.animOff;
+    if (typeof raw.eightKeys === "boolean") s.eightKeys = raw.eightKeys;
   }
   SOCIALS.forEach(x => { s.social[x.id] = !(raw && raw.social && typeof raw.social === "object" && raw.social[x.id] === false); });
   return s;
@@ -2509,6 +2566,9 @@ function wmApplySettings() {
   const s = WM.set;
   $("optGearTop").checked = s.gearTop; $("optCpsOff").checked = s.cpsOff; $("optCpsColor").checked = s.cpsColor; $("optAnimOff").checked = s.animOff;
   document.documentElement.classList.toggle("noanim", s.animOff);
+  $("optEight").checked = s.eightKeys; $("mode8").style.display = s.eightKeys ? "" : "none";
+  $("divider").style.bottom = WORK_BOTTOM + "px";
+  if (WM.keysShown !== keyCount()) { WM.keysShown = keyCount(); applyKeyCount(); }
   $("cCpsRow").style.display = s.cpsOff ? "none" : "";
   if (typeof paintCounters === "function") paintCounters();
   $("tbtns").style.zIndex = s.gearTop ? "3" : "1";   // 3 = above the windows, 1 = windows can cover it
@@ -2527,9 +2587,11 @@ function wmApplySettings() {
 }
 function wmSettingChanged() {
   const s = WM.set;
-  s.gearTop = $("optGearTop").checked; s.cpsOff = $("optCpsOff").checked; s.cpsColor = $("optCpsColor").checked; s.animOff = $("optAnimOff").checked;
+  s.gearTop = $("optGearTop").checked; s.cpsOff = $("optCpsOff").checked; s.cpsColor = $("optCpsColor").checked; s.animOff = $("optAnimOff").checked; s.eightKeys = $("optEight").checked;
   SOCIALS.forEach(x => { s.social[x.id] = $("optSocial_" + x.id).checked; });
+  const keysBefore = WM.keysShown;
   wmApplySettings();
+  if (keysBefore !== undefined && keysBefore !== WM.keysShown) wmRefitKeys();
   const body = JSON.stringify(s);
   WM.schain = WM.schain.then(() => fetch("/api/settings", { method: "POST", headers: { "X-ESPdevice": "1", "Content-Type": "application/json" }, body: body }).catch(() => {}));
 }
@@ -2542,7 +2604,6 @@ async function wmInit() {
   WM.fresh = !(res[0] && typeof res[0] === "object" && res[0].win);
   WM.L = wmClean(res[0]);
   wmApplySettings();
-  $("divider").style.bottom = WORK_BOTTOM + "px";
   [["gearBtn", "Settings"], ["themeBtn", "Theme"]].forEach(p => {   // Settings_icon.png / Theme_icon.png replace the button text
     const gi = new Image(); gi.alt = ""; gi.draggable = false;
     gi.onload = () => { const g = $(p[0]); g.textContent = ""; g.appendChild(gi); g.classList.add("hasicon"); };

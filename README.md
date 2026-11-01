@@ -87,7 +87,7 @@ You still need to build and flash the keypad itself, see [Make your own keypad](
 - A thin line across the page (50% opacity) separates the windows from the links and status strip. Windows can still be dragged below it.
 - The VISUALIZER shows **CPS** (key presses in the last second, all keys) and **Total** (every press since the counter started) beside the keys. Only the numbers pop on every press. CPS is colour coded: normal 0-5, orange 5-10, red 10-15, purple 15+. The app counts the total itself, so presses are counted even with the page closed; it is saved in `config\counters.json`. Everything can be switched off in SETTINGS.
 - The settings and themes buttons and the social links become your own icons when `Settings_icon.png`, `Theme_icon.png`, `Github_icon.png` and so on exist in `config\icons\`; otherwise text is shown.
-- `[ THEMES ]` and `[ SETTINGS ]` at the top right are pull-down menus that hang from their button (click outside, press Esc or click the button again to close). Opening spreads a thin bar out from the button and then grows the panel downward; closing shrinks and fades it out. THEMES holds the theme picker and colour editor. SETTINGS (saved in `config\settings.json`) has: reset window layout, keep the two buttons on top of the windows, reset total / CPS, disable CPS counter, colored cps, disable animations, and which social links to show.
+- `[ THEMES ]` and `[ SETTINGS ]` at the top right are pull-down menus that hang from their button (click outside, press Esc or click the button again to close). Opening spreads a thin bar out from the button and then grows the panel downward; closing shrinks and fades it out. THEMES holds the theme picker and colour editor. SETTINGS (saved in `config\settings.json`) has: reset window layout, keep the two buttons on top of the windows, 8-key support (experimental), reset total / CPS, disable CPS counter, colored cps, disable animations, and which social links to show.
 - Social links (GitHub, YouTube, TikTok, Discord) sit in the bottom-left corner and can be switched off one by one.
 - The connection status (for example `CONNECTED COM3 | ACTIVE`) and the credit with the version number sit in the bottom-right corner.
 
@@ -138,7 +138,23 @@ Connect one side of each switch to a GPIO pin and the other side to **GND**. No 
 
 (GPIO numbers are usually labelled `D4`, `D5`, `D13` on dev boards.)
 
-To change the pins or the order, edit `KEY_PINS` at the top of the sketch. The order of the numbers decides which key is key 1, 2 and 3 on the PC. If the keys light up in the wrong order in the visualizer, swap the numbers in the sketch rather than the wiring.
+#### Optional: 8 keys (experimental)
+
+The same ESP32 can carry up to 8 keys. Keep your 3 keys as they are and wire 5 more switches the same way (one side to the GPIO, the other side to **GND**):
+
+| Key | GPIO | Other side of the switch |
+|-----|------|--------------------------|
+| 4   | GPIO 18 | GND |
+| 5   | GPIO 19 | GND |
+| 6   | GPIO 21 | GND |
+| 7   | GPIO 22 | GND |
+| 8   | GPIO 23 | GND |
+
+The firmware always scans all 8 pins; a pin with nothing connected is pulled up and never reports a press, so the same firmware works with 3 keys or 8. Then turn on **SETTINGS > 8-key support (experimental)** in the page. The app shows 8 keys in the VISUALIZER and KEYBINDS, a `[8-key Mode Active]` note appears at the bottom centre, and keys 4 to 8 start as `F`, `G`, `H`, `J`, `K`. Without the setting the app uses 3 keys only.
+
+Pins to avoid: GPIO 0, 2, 12 and 15 (they change how the ESP32 boots), 6 to 11 (flash), 1 and 3 (the USB serial connection to the PC) and 34 to 39 (no internal pull-up).
+
+To change the pins or the order, edit `KEY_PINS` at the top of the sketch. The order of the numbers decides which key is key 1, 2, 3 ... on the PC. If the keys light up in the wrong order in the visualizer, swap the numbers in the sketch rather than the wiring.
 
 ### 2. Flash the ESP32 with the Arduino IDE
 
@@ -200,7 +216,7 @@ Open http://localhost:9191 (or tray icon > Open Settings).
 |---------|--------------|
 | **SETTINGS** | Pull-down from the button at the top right: buttons on top, CPS options, social links, reset total / CPS, reset window layout. |
 | **PROFILE** | Pick, add, rename or delete profiles (up to 99). |
-| **VISUALIZER** | Shows the 3 keys lighting up live, with their current bindings. |
+| **VISUALIZER** | Shows the keys (3, or 8 in 8-key mode) lighting up live, with their current bindings, plus the CPS and Total counters. |
 | **KEYBINDS** | Edit each key's binding: type + ENTER, or CAPTURE. |
 | **SERVICE** | PAUSE / RESUME typing, or TERMINATE the app. |
 | **DEBUGGER** | Link status, reports per second, latency stats, live event log. |
@@ -218,7 +234,7 @@ Open http://localhost:9191 (or tray icon > Open Settings).
 ## Limitations
 
 - Windows only.
-- Exactly 3 keys at the moment.
+- 3 keys, or up to 8 keys with the experimental 8-key mode (one ESP32, direct-wired switches, no key matrix).
 - Classic ESP32 boards that show up as a serial/COM port only (see above).
 - Key names assume a US keyboard layout.
 - Keyboard and media keys only, no mouse buttons.
@@ -229,10 +245,10 @@ The board sends one byte per key event at 921600 baud, so you can write your own
 
 | Event | Byte |
 |-------|------|
-| key N pressed | `N*2 - 1` (key 1 = `0x01`, key 2 = `0x03`, key 3 = `0x05`) |
-| key N released | `N*2` (key 1 = `0x02`, key 2 = `0x04`, key 3 = `0x06`) |
+| key N pressed | `N*2 - 1` (key 1 = `0x01`, key 2 = `0x03`, key 3 = `0x05` ... key 8 = `0x0F`) |
+| key N released | `N*2` (key 1 = `0x02`, key 2 = `0x04`, key 3 = `0x06` ... key 8 = `0x10`) |
 | key N held | the press byte repeats every 20 ms (a keepalive, so the PC can tell "still held" from "board unplugged") |
-| identity query | PC sends `0xFE`, board replies `3KEY\n`. This is how the app finds the right COM port. |
+| identity query | PC sends `0xFE`, board replies `8KEY\n` (the older 3-key firmware replies `3KEY\n`; the app accepts both). This is how the app finds the right COM port. |
 
 ## Repo layout
 

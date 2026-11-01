@@ -1,31 +1,39 @@
-// ESPdevice - 3-key keypad firmware for ESP32 (WROOM-32 / CP2102 USB-serial)
-// ------------------------------------------------------------------------
+// ESPdevice - keypad firmware for ESP32 (WROOM-32 / CP2102 USB-serial): 3 keys, or 8 keys (experimental)
+// -----------------------------------------------------------------------------------------------------
 // Sends one byte per key event over USB serial at 921600 baud. No WiFi, no
 // Bluetooth, no LED code: just debounce + report, so the loop stays fast.
 //
+// The same firmware works with 3 keys or 8 keys: it always scans all 8 pins. A pin with nothing
+// connected is pulled up internally and simply never reports a press. Which keys the PC uses is
+// chosen in the ESPdevice page (SETTINGS > 8-key support).
+//
 // Protocol (what ESPdevice.exe expects):
-//   key N press   : byte (N*2 - 1)   -> key1 = 0x01, key2 = 0x03, key3 = 0x05
-//   key N release : byte (N*2)       -> key1 = 0x02, key2 = 0x04, key3 = 0x06
+//   key N press   : byte (N*2 - 1)   -> key1 = 0x01, key2 = 0x03 ... key8 = 0x0F
+//   key N release : byte (N*2)       -> key1 = 0x02, key2 = 0x04 ... key8 = 0x10
 //   held key      : the press byte is repeated every KEEPALIVE_MS, so the PC
 //                   can tell "still held" from "board unplugged / went quiet".
-//   identity query: the PC sends 0xFE, the board replies "3KEY\n". This is how
+//   identity query: the PC sends 0xFE, the board replies "8KEY\n". This is how
 //                   the PC finds the right COM port without a fixed port number.
+//                   (ESPdevice.exe also still accepts "3KEY" from the older 3-key firmware.)
 //
 // Wiring: each key connects its GPIO to GND (internal pull-up is used, so no
 // resistors needed).
+//   keys 1-3 (the original keypad): GPIO 4, 5, 13
+//   keys 4-8 (the extension):       GPIO 18, 19, 21, 22, 23
+// Do not use GPIO 0, 2, 12, 15 (boot pins), 6-11 (flash), 1 and 3 (USB serial), 34-39 (no pull-up).
 //
 // KEY ORDER: the order of the numbers in KEY_PINS decides which key is "key 1,
-// 2, 3" on the PC. If your keys show up in the wrong order in the ESPdevice
+// 2, 3 ... 8" on the PC. If your keys show up in the wrong order in the ESPdevice
 // visualizer, swap the numbers here (not the wiring).
 
-const uint8_t NUM_KEYS = 3;
-const uint8_t KEY_PINS[NUM_KEYS] = {4, 5, 13};   // key 1 = GPIO4, key 2 = GPIO5, key 3 = GPIO13
+const uint8_t NUM_KEYS = 8;
+const uint8_t KEY_PINS[NUM_KEYS] = {4, 5, 13, 18, 19, 21, 22, 23};
 
 const uint32_t DEBOUNCE_MS  = 5;    // a pin must hold a new level this long before it counts
 const uint32_t KEEPALIVE_MS = 20;   // resend interval while a key is held
 
 const uint8_t ID_QUERY_BYTE = 0xFE;
-const char*   DEVICE_ID     = "3KEY";   // must match DEVICE_ID in ESPdevice.cpp
+const char*   DEVICE_ID     = "8KEY";   // ESPdevice.exe accepts "3KEY" and "8KEY"
 
 uint8_t  rawState[NUM_KEYS];      // last raw pin reading
 uint8_t  stableState[NUM_KEYS];   // debounced state (LOW = pressed)
