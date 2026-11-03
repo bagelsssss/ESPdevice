@@ -1950,7 +1950,7 @@ html.noanim .menu.opening, html.noanim .menu.closing, html.noanim .crow span.pop
 .br { position: fixed; right: 16px; bottom: 12px; z-index: 1; text-align: right; }
 .credit { opacity: 0.5; color: var(--c-credit); }
 /* per-window tweaks */
-.vis { display: flex; flex-direction: column; align-items: center; gap: 12px; min-width: 300px; }
+.vis { display: flex; flex-direction: column; align-items: center; gap: 12px; min-width: 300px; padding-bottom: 10px; }   /* room for the CPS pop, so it never makes a scrollbar */
 .vis .keys { justify-content: center; }
 .crow { align-self: stretch; display: flex; align-items: center; gap: 16px; white-space: nowrap; color: var(--c-stat-label); line-height: 1.5; min-height: 1.8em; }
 .crow span { display: inline-block; color: var(--c-stat-value); transform-origin: 50% 65%; }
@@ -2493,8 +2493,8 @@ function wmOnResize() {
   wmRzT = setTimeout(() => { if (WM.L && WM.L.auto) { wmRelayoutAuto(); wmPlaceAll(); wmSave(); } }, 120);
 }
 function wmFitFresh() {   // first run (nothing saved yet): once the keybind rows exist, cut every window to its content
-  if (!WM.fresh || WM.fitted || !WM.L) return;
-  WM.fitted = true; WM.L = wmClean(null); wmPlaceAll();
+  if (WM.fitted || !WM.L || !WM.L.auto) return;    // an untouched layout (new, or saved as "auto") is fitted once to the real content
+  WM.fitted = true; wmRelayoutAuto(); wmPlaceAll();
 }
 
 function wmDefaults() {
@@ -2547,7 +2547,7 @@ function wmDefaults() {
 }
 
 function wmClean(raw) {
-  const D = wmDefaults(), L = { v: 1, auto: !raw, order: [], win: {} };
+  const D = wmDefaults(), L = { v: 1, auto: !(raw && typeof raw === "object" && raw.win) || raw.auto === true, order: [], win: {} };   // a saved layout stays "auto" only if it was saved that way
   const rw = (raw && typeof raw === "object" && raw.win && typeof raw.win === "object") ? raw.win : {};
   // entries this version does not use (SERVICE / DEBUGGER windows of 1.1) are carried along untouched, so going back to an older build keeps them
   if (raw && typeof raw === "object" && raw.win) {
