@@ -1820,8 +1820,8 @@ html.noanim .menu.opening, html.noanim .menu.closing, html.noanim .crow span.pop
 .crow { align-self: stretch; display: flex; align-items: center; gap: 16px; white-space: nowrap; color: var(--c-stat-label); line-height: 1.5; min-height: 1.8em; }
 .crow span { display: inline-block; color: var(--c-stat-value); transform-origin: 50% 65%; }
 #cCpsRow { font-size: 1.2em; } #cCps { font-size: 1.2em; }
-#cTotalRow { margin-left: auto; font-size: 0.95em; text-align: right; }
-#cTotal.d5 { font-size: 0.88em; } #cTotal.d6 { font-size: 0.76em; } #cTotal.dm { font-size: 0.7em; }
+#cTotalRow { margin-left: auto; font-size: 1.2em; text-align: right; }   /* same size as CPS */
+#cTotal { font-size: 1.2em; }
 .crow span.pop { animation: cpop 0.3s steps(9, end); }   /* only the CPS number pops: size only, never see-through (30 fps) */
 @keyframes cpop { from { transform: scale(1.45); } to { transform: scale(1); } }
 .crow span.cps1 { color: #e8890c; } .crow span.cps2 { color: #e02020; } .crow span.cps3 { color: #9b30ff; }
@@ -2980,13 +2980,13 @@ async function loadArt() {
 
 // ---- CPS (presses in the last second) and Total (all presses, counted by the app and saved across restarts) ----
 let replayUntil = 0, cpsTimes = [], cTotal = 0, cSrv = -1, cSince = 0;
-// big numbers: up to 4 digits full size, 5 and 6 digits smaller, from a million on short (1.25M, 12.3M, 123M, 1.23B); the exact value is the hover text
+// big numbers: written out up to 99,999; from 100,000 on short (123K, 1.25M, 12.3M, 123M, 1.23B); the exact value is the hover text
 function fmtBig(n) {
-  if (n < 1e6) return { t: n.toLocaleString("en-US"), c: n < 1e4 ? "" : n < 1e5 ? "d5" : "d6" };
-  const u = [[1e12, "T"], [1e9, "B"], [1e6, "M"]];
+  if (n < 1e5) return { t: n.toLocaleString("en-US"), c: "" };
+  const u = [[1e12, "T"], [1e9, "B"], [1e6, "M"], [1e3, "K"]];
   for (let i = 0; i < u.length; i++) if (n >= u[i][0]) {
     const v = n / u[i][0], d = v >= 100 ? 1 : v >= 10 ? 10 : 100;
-    return { t: (Math.floor(v * d) / d) + u[i][1], c: "dm" };
+    return { t: (Math.floor(v * d) / d) + u[i][1], c: "" };
   }
 }
 function paintCounters() {

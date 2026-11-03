@@ -88,7 +88,7 @@ You still need to build and flash the keypad itself, see [Make your own keypad](
 
 **Settings and extras**
 - A thin line across the page (50% opacity) separates the windows from the links and status strip. Windows can still be dragged below it.
-- The VISUALIZER shows the keys centred, with **CPS** (key presses in the last second, all keys) at the bottom left and **Total** (every press since the counter started, smaller) at the bottom right. Only the CPS number pops on every press. Big totals shrink: up to 4 digits full size, 5 and 6 digits smaller, from a million on they are shortened (1.25M, 12.3M, 123M, 1.23B); hover the Total for the exact value. CPS is colour coded: normal 0-5, orange 5-10, red 10-15, purple 15+. The app counts the total itself, so presses are counted even with the page closed; it is saved in `config\counters.json`. Everything can be switched off in SETTINGS.
+- The VISUALIZER shows the keys centred, with **CPS** (key presses in the last second, all keys) at the bottom left and **Total** (every press since the counter started, same size as CPS) at the bottom right. Only the CPS number pops on every press. The Total is written out up to 99,999 and shortened from 100,000 (123K, 1.25M, 12.3M, 123M, 1.23B); hover it for the exact value. CPS is colour coded: normal 0-5, orange 5-10, red 10-15, purple 15+. The app counts the total itself, so presses are counted even with the page closed; it is saved in `config\counters.json`. Everything can be switched off in SETTINGS.
 - The settings and themes buttons and the social links become your own icons when `Settings_icon.png`, `Theme_icon.png`, `Github_icon.png` and so on exist in `config\icons\`; otherwise text is shown.
 - `[ THEMES ]`, `[ SETTINGS ]` and `[ DEBUGGER ]` (below settings) at the top right are pull-down menus that hang from their button (click outside, press Esc or click the button again to close). Opening spreads a thin bar out from the button and then grows the panel downward; closing shrinks and fades it out. THEMES holds the theme picker and colour editor. SETTINGS (saved in `config\settings.json`) has: reset window layout, keep the buttons on top of the windows, 8-key support (experimental), reset total / CPS, disable CPS counter, colored cps, disable animations, old animations, SERVICE (pause / resume typing, terminate) and which social links to show. Settings written by other versions are kept when you save.
 - Layout and settings files stay compatible with older versions: nothing was renamed or removed, new data lives in new fields or files.
@@ -264,6 +264,9 @@ app/espdevice.rc, espdevice.ico    Tray/exe icon
 installer/ESPdevice.iss            Inno Setup script for ESPdevice-Setup.exe
 .github/workflows/build.yml        Builds the exe, installer and portable zip; attaches them to releases
 ```
+
+To publish a new version: push a tag like `v1.1.1`. GitHub Actions writes the version number into `app/version.h`, builds everything and attaches it to a Release.
+
 ## License
 
 The code is licensed under the [GNU GPL v3.0](LICENSE). The logo and icon artwork are made by bagelings and are all rights reserved.
