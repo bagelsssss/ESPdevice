@@ -1,7 +1,10 @@
 # Changelog
 
-## 1.2.0 (in progress: first part)
+## 1.2.0 (in progress: advanced theming still to come)
 - **Visualizer**: keys centred, **CPS** at the bottom left and **Total** (same size as CPS) at the bottom right, each in its own row so they can't wrap or get cut off any more (this was the "counter disappears" bug). The Total no longer pops; CPS still does. The Total is shortened from 100,000 (123K, 1.25M, 12.3M, 123M, 1.23B); hover for the exact value.
+- **Per-key totals** (SETTINGS > per-key totals): a counter under each key, clicks since the app started.
+- **Click stats**: bar-chart button at the top right of the VISUALIZER window. SESSION graph (clicks per minute since the app started) and ALL TIME graph (clicks per day), for all keys or a single key, with hover values. ALL TIME needs SETTINGS > **log click stats** (off by default, greyed out while off) and is saved in the new, versioned `config\clickstats.json`; `counters.json` is unchanged. SETTINGS > CLEAR CLICK STATS wipes it.
+- The open SETTINGS / THEMES panel now covers the DEBUGGER button instead of being drawn under it.
 - **Profiles per mode**: 3-key and 8-key have separate lists. 3-key keeps `profiles.json` in the same format, 8-key uses `profiles8.json` (starts as a copy of the 3-key list). The old file is backed up once as `profiles.pre-1.2.bak`.
 - **test profile** at the end of every list: can't be renamed or removed, no bindings, never saved. The keys light up and count, but nothing is typed.
 - **SERVICE window removed**: pause / resume / terminate are in SETTINGS.

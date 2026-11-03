@@ -46,6 +46,7 @@
 #include <map>
 #include <algorithm>
 #include <functional>
+#include <array>
 #include <exception>
 #include <cstdint>
 #include <cstdio>
@@ -471,12 +472,14 @@ static void SaveCounters(bool force) {
     g_clicksSaved = t;
 }
 // 8-key mode lives in the page settings (config\settings.json, "eightKeys":true); the app reads the flag here
+static std::atomic<bool> g_logStats{ false };   // SETTINGS > log click stats
 static void LoadProfilesLocked();
 static void PublishBindingsLocked();
 static std::mutex g_profileMutex;
 static std::atomic<bool> g_profilesLoaded{ false };
 static void ApplyKeyMode(const std::string& settingsJson) {
     int n = settingsJson.find("\"eightKeys\":true") != std::string::npos ? 8 : 3;
+    g_logStats = settingsJson.find("\"logStats\":true") != std::string::npos;
     if (g_activeKeys.exchange(n) != n) {
         g_keysChanged = true;
         if (g_profilesLoaded) {                       // each mode has its own profile list: switch lists
@@ -509,7 +512,124 @@ static void LoadCounters() {
     if (g_clicksSince.load() <= 0) g_clicksSince = (int64_t)time(nullptr);
     g_clicksSaved = g_clicksTotal.load();
 }
+// ---- Click statistics (new in 1.2) --------------------------------------------
+// Per-key counts since the app started (shown under the keys), a per-minute history kept in memory (the SESSION graph),
+// and, only while SETTINGS > "log click stats" is on, per-day counts saved to config\clickstats.json
+//   {"v":1,"days":{"2026-11-03":[k1,k2,...,k8], ...}}   (a separate versioned file: counters.json is untouched)
+static std::atomic<uint64_t> g_keyClicks[NUM_KEYS];
+struct MinSlot { std::atomic<int64_t> minute; std::atomic<uint32_t> c[NUM_KEYS]; };
+constexpr int MIN_SLOTS = 1440;                       // the last 24 hours, one slot per minute
+static MinSlot g_min[MIN_SLOTS];
+static std::atomic<int64_t> g_sessStartMin{ 0 };
+static std::atomic<uint64_t> g_dayCnt[NUM_KEYS];      // counted since the last fold into g_days (only while logging)
+static std::mutex g_statsMx;
+static std::map<std::string, std::array<uint64_t, NUM_KEYS>> g_days;
+static bool g_statsDirty = false;
+
+static void CountKeyClick(int idx) {                  // device thread, after the keystroke was sent
+    g_keyClicks[idx].fetch_add(1, std::memory_order_relaxed);
+    int64_t m = (int64_t)(time(nullptr) / 60);
+    MinSlot& sl = g_min[m % MIN_SLOTS];
+    if (sl.minute.load(std::memory_order_relaxed) != m) {   // this slot still holds an older minute: reuse it
+        for (int k = 0; k < NUM_KEYS; k++) sl.c[k].store(0, std::memory_order_relaxed);
+        sl.minute.store(m, std::memory_order_relaxed);
+    }
+    sl.c[idx].fetch_add(1, std::memory_order_relaxed);
+    if (g_logStats.load(std::memory_order_relaxed)) g_dayCnt[idx].fetch_add(1, std::memory_order_relaxed);
+}
+static std::string LocalDateNow() {
+    std::time_t t = std::time(nullptr); std::tm tmv; localtime_s(&tmv, &t);
+    char b[16]; strftime(b, sizeof(b), "%Y-%m-%d", &tmv); return b;
+}
+static void FoldDay() {                               // moves the counts since the last fold into today's entry
+    std::lock_guard<std::mutex> lk(g_statsMx);
+    std::string d = LocalDateNow();
+    for (int k = 0; k < NUM_KEYS; k++) {
+        uint64_t v = g_dayCnt[k].exchange(0);
+        if (v) { g_days[d][k] += v; g_statsDirty = true; }
+    }
+}
+static std::string StatsFileJson() {                  // caller holds g_statsMx
+    std::ostringstream o; o << "{\"v\":1,\"days\":{";
+    bool first = true;
+    for (const auto& kv : g_days) {
+        if (!first) o << ","; first = false;
+        o << "\"" << kv.first << "\":[";
+        for (int k = 0; k < NUM_KEYS; k++) o << (k ? "," : "") << kv.second[k];
+        o << "]";
+    }
+    o << "}}"; return o.str();
+}
+static void SaveStats(bool force) {
+    std::lock_guard<std::mutex> lk(g_statsMx);
+    if (!g_statsDirty && !force) return;
+    WriteFileAtomic(g_configDir / L"clickstats.json", StatsFileJson());
+    g_statsDirty = false;
+}
+static void LoadStats() {
+    g_sessStartMin = (int64_t)(time(nullptr) / 60);
+    std::ifstream f(g_configDir / L"clickstats.json", std::ios::binary);
+    if (!f.is_open()) return;
+    std::ostringstream ss; ss << f.rdbuf(); std::string t = ss.str();
+    size_t p = t.find("\"days\"");
+    if (p == std::string::npos) return;
+    std::lock_guard<std::mutex> lk(g_statsMx);
+    p += 6;
+    while (p < t.size()) {                             // "YYYY-MM-DD":[n,n,...]
+        size_t q1 = t.find('"', p); if (q1 == std::string::npos) break;
+        size_t q2 = t.find('"', q1 + 1); if (q2 == std::string::npos) break;
+        std::string d = t.substr(q1 + 1, q2 - q1 - 1);
+        size_t b1 = t.find('[', q2); size_t b2 = b1 == std::string::npos ? b1 : t.find(']', b1);
+        if (b2 == std::string::npos) break;
+        p = b2 + 1;
+        if (d.size() != 10 || d[4] != '-' || d[7] != '-') continue;
+        std::array<uint64_t, NUM_KEYS> a{};
+        const char* c = t.c_str() + b1 + 1;
+        for (int k = 0; k < NUM_KEYS; k++) { char* e = nullptr; a[k] = strtoull(c, &e, 10); if (e == c) break; c = e; while (*c == ',' || *c == ' ') c++; }
+        g_days[d] = a;
+    }
+}
+static void ClearStats() {
+    { std::lock_guard<std::mutex> lk(g_statsMx); g_days.clear(); for (int k = 0; k < NUM_KEYS; k++) g_dayCnt[k] = 0; g_statsDirty = true; }
+    for (int i = 0; i < MIN_SLOTS; i++) { g_min[i].minute = -1; for (int k = 0; k < NUM_KEYS; k++) g_min[i].c[k] = 0; }
+    for (int k = 0; k < NUM_KEYS; k++) g_keyClicks[k] = 0;
+    g_sessStartMin = (int64_t)(time(nullptr) / 60);
+    SaveStats(true);
+}
+static std::string BuildStatsJson(bool all) {
+    std::ostringstream o;
+    int n = g_activeKeys.load();
+    if (!all) {                                        // SESSION: clicks per minute since the app started (at most the last 24 h)
+        int64_t now = (int64_t)(time(nullptr) / 60), start = std::max<int64_t>(g_sessStartMin.load(), now - (MIN_SLOTS - 1));
+        o << "{\"mode\":\"session\",\"keys\":" << n << ",\"startMin\":" << start << ",\"nowMin\":" << now << ",\"data\":[";
+        for (int64_t m = start; m <= now; m++) {
+            const MinSlot& sl = g_min[m % MIN_SLOTS];
+            bool has = sl.minute.load() == m;
+            o << (m > start ? "," : "") << "[";
+            for (int k = 0; k < NUM_KEYS; k++) o << (k ? "," : "") << (has ? sl.c[k].load() : 0u);
+            o << "]";
+        }
+        o << "]}";
+    } else {                                           // ALL TIME: clicks per day (only days that were logged)
+        FoldDay();
+        std::lock_guard<std::mutex> lk(g_statsMx);
+        o << "{\"mode\":\"all\",\"keys\":" << n << ",\"logging\":" << (g_logStats ? "true" : "false") << ",\"days\":{";
+        bool first = true;
+        for (const auto& kv : g_days) {
+            if (!first) o << ","; first = false;
+            o << "\"" << kv.first << "\":[";
+            for (int k = 0; k < NUM_KEYS; k++) o << (k ? "," : "") << kv.second[k];
+            o << "]";
+        }
+        o << "}}";
+    }
+    return o.str();
+}
+
+static std::string KeyClicksJson() { std::string r; for (int k = 0; k < NUM_KEYS; k++) r += (k ? "," : "") + std::to_string(g_keyClicks[k].load()); return r; }
+
 static void ResetCounters() {
+    for (int k = 0; k < NUM_KEYS; k++) g_keyClicks[k] = 0;   // the per-key numbers under the keys reset with the Total
     g_clicksTotal = 0;
     g_clicksSince = (int64_t)time(nullptr);
     SaveCounters(true);
@@ -518,6 +638,7 @@ static void CounterSaverLoop() { // writes the file a few seconds after the numb
     while (g_running) {
         for (int i = 0; i < 50 && g_running; i++) std::this_thread::sleep_for(std::chrono::milliseconds(100));
         SaveCounters(false);
+        FoldDay(); SaveStats(false);   // per-day click stats (only anything while "log click stats" is on)
     }
 }
 
@@ -781,6 +902,7 @@ static void HandleByte(BYTE b, double now, int64_t tRecv) {
         }
         PushEvent(EVT_PRESS, idx, lat, g_cur[idx].text);
         g_clicksTotal.fetch_add(1, std::memory_order_relaxed); // real presses only (keepalives return above)
+        CountKeyClick(idx);
     } else {
         if (!g_held[idx]) return;
         uint32_t lat = 0;
@@ -1003,6 +1125,7 @@ static std::string BuildStateJsonLocked(const std::string& error) {
         << ",\"latCount\":" << cnt
         << ",\"clicksTotal\":" << g_clicksTotal.load()
         << ",\"clicksSince\":" << g_clicksSince.load()
+        << ",\"logStats\":" << (g_logStats ? "true" : "false") << ",\"keyClicks\":[" << KeyClicksJson() << "]"
         << ",\"hasLogo\":" << (g_hasLogo ? "true" : "false")
         << ",\"logoVer\":" << g_logoVer.load()
         << ",\"holdDelayMs\":" << (int)(g_initialDelay * 1000)
@@ -1178,7 +1301,8 @@ static void HandleRequest(SOCKET client) {
     std::string path = requestLine.substr(methodEnd + 1, pathEnd == std::string::npos ? std::string::npos : pathEnd - methodEnd - 1);
 
     size_t queryPos = path.find('?');
-    if (queryPos != std::string::npos) path.resize(queryPos); // ignore ?v=... cache-busters
+    std::string query;
+    if (queryPos != std::string::npos) { query = path.substr(queryPos + 1); path.resize(queryPos); } // ?v=... cache-busters are ignored
 
     std::string body;
     size_t headerEnd = request.find("\r\n\r\n");
@@ -1391,6 +1515,13 @@ static void HandleRequest(SOCKET client) {
         }
         response = HttpResponse("200 OK", "application/json", BuildStateJsonLocked(err));
     }
+    else if (method == "GET" && path == "/api/stats") {
+        response = HttpResponse("200 OK", "application/json", BuildStatsJson(query.find("mode=all") != std::string::npos));
+    }
+    else if (method == "POST" && path == "/api/stats/clear") {
+        ClearStats();
+        response = HttpResponse("200 OK", "application/json", BuildStateJson());
+    }
     else if (method == "POST" && path == "/api/counters/reset") {
         ResetCounters();
         response = HttpResponse("200 OK", "application/json", BuildStateJson());
@@ -1547,6 +1678,7 @@ static void QuitApp() {
     g_running = false;
     g_evCv.notify_all();
     SaveCounters(false);
+    FoldDay(); SaveStats(false);
     for (int i = 0; i < 40 && g_anySent.load(); i++) std::this_thread::sleep_for(std::chrono::milliseconds(10));
     RemoveTrayIcon();
     ExitProcess(0);
@@ -1578,6 +1710,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
 
     InitPaths();
     LoadCounters();
+    LoadStats();
     LoadKeyMode();
     SetUnhandledExceptionFilter(CrashFilter);
     InitClock();
@@ -1623,6 +1756,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
 
     g_running = false;
     SaveCounters(false);
+    FoldDay(); SaveStats(false);
     RemoveTrayIcon();
     timeEndPeriod(1);
     return 0;
@@ -1777,6 +1911,7 @@ html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg);
 .tbt { grid-column: 1; grid-row: 1; } .tbs { grid-column: 2; grid-row: 1; } .tbd { grid-column: 2; grid-row: 2; }
 .tbtns.open { z-index: 100 !important; }   /* an open pull-down is always above the windows */
 .tb { position: relative; }
+.tb.mo { z-index: 5; }   /* the button whose panel is open (and the panel) sit above the other buttons: the panel covers DEBUGGER instead of hiding behind it */
 .gear.on { border-color: var(--c-border); position: relative; z-index: 2; }
 /* pull-down menus: hang from their button (the button is the tab at the top-right corner of the panel) */
 .menu { position: absolute; right: 0; top: 100%; margin-top: -1px; display: none; background: var(--c-bg); border: 1px solid var(--c-border); padding: 6px 14px 14px 14px; overflow: auto; width: 360px; max-width: calc(100vw - 32px); max-height: calc(100vh - 116px); transform-origin: 100% 0; scrollbar-width: thin; scrollbar-color: var(--c-border) var(--c-bg); }
@@ -1825,6 +1960,19 @@ html.noanim .menu.opening, html.noanim .menu.closing, html.noanim .crow span.pop
 .crow span.pop { animation: cpop 0.3s steps(9, end); }   /* only the CPS number pops: size only, never see-through (30 fps) */
 @keyframes cpop { from { transform: scale(1.45); } to { transform: scale(1); } }
 .crow span.cps1 { color: #e8890c; } .crow span.cps2 { color: #e02020; } .crow span.cps3 { color: #9b30ff; }
+.kcol { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.kt { color: var(--c-stat-value); font-size: 0.9em; white-space: nowrap; line-height: 1.2; min-height: 1.2em; }
+.keys.k8 .kt { font-size: 0.75em; }
+.statbtn svg { display: block; width: 70%; height: 70%; fill: currentColor; }
+.statspanel { position: fixed; left: 50%; top: 96px; transform: translateX(-50%); width: min(700px, calc(100vw - 24px)); max-height: calc(100vh - 150px); overflow: auto; background: var(--c-bg); border: 1px solid var(--c-border); z-index: 90; padding: 6px 14px 12px 14px; scrollbar-width: thin; scrollbar-color: var(--c-border) var(--c-bg); }
+.sbar { display: flex; align-items: center; gap: 8px; padding: 2px 0 4px 0; } .sbar h2 { flex: 1; margin: 0; font-size: 1em; font-weight: normal; color: var(--c-fg); }
+.stabs, .skeys { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.stab.on, .skeys button.on { background: var(--c-btn-active-bg); color: var(--c-btn-active-fg); }
+.schart { position: relative; height: min(260px, calc(100vh - 380px)); min-height: 120px; border: 1px solid var(--c-log-border); background: var(--c-log-bg); }
+#statsChart { width: 100%; height: 100%; overflow: hidden; } #statsChart svg { display: block; }
+.sbarr { fill: var(--c-stat-value); } .sgrid { stroke: var(--c-border); opacity: 0.4; } .stxt { fill: var(--c-dim); font-size: 11px; font-family: inherit; }
+.sempty { padding: 18px; color: var(--c-dim); }
+.stip { position: absolute; display: none; pointer-events: none; background: var(--c-bg); border: 1px solid var(--c-border); padding: 2px 6px; white-space: nowrap; z-index: 2; }
 .opt { display: flex; align-items: center; gap: 8px; margin: 5px 0; cursor: pointer; user-select: none; }
 .opt input { width: 14px; height: 14px; margin: 0; accent-color: var(--c-fg); }
 /* small / square browser window: the social links hide, and [8-key Mode Active] takes their place at the bottom left */
@@ -1882,6 +2030,11 @@ static const char* HTML_BODY = R"HTMLX(<body>
 <div class="row"><button onclick="resetCounters()">RESET TOTAL / CPS</button></div>
 <label class="opt"><input type="checkbox" id="optCpsOff" onchange="wmSettingChanged()"> disable CPS counter</label>
 <label class="opt"><input type="checkbox" id="optCpsColor" onchange="wmSettingChanged()"> colored cps</label>
+<div class="setgrp">STATISTICS</div>
+<label class="opt"><input type="checkbox" id="optPerKey" onchange="wmSettingChanged()"> per-key totals</label>
+<label class="opt"><input type="checkbox" id="optLogStats" onchange="wmSettingChanged()"> log click stats</label>
+<p class="dim">Logging saves clicks per day to config\clickstats.json (only while it is on). It is needed for the ALL TIME graph.</p>
+<div class="row"><button onclick="clearStats()">CLEAR CLICK STATS</button></div>
 <div class="setgrp">ANIMATIONS</div>
 <label class="opt"><input type="checkbox" id="optAnimOff" onchange="wmSettingChanged()"> disable animations</label>
 <label class="opt"><input type="checkbox" id="optOldAnim" onchange="wmSettingChanged()"> old animations</label>
@@ -1951,6 +2104,13 @@ static const char* HTML_BODY = R"HTMLX(<body>
 
 
 </div>
+<div class="statspanel" id="statsPanel" style="display:none">
+<div class="sbar"><h2>[ CLICK STATS ]</h2><button class="wbtn" onclick="statsClose()" title="Close" aria-label="Close click stats">x</button></div>
+<div class="stabs"><button id="tabSess" class="stab on" onclick="statsTab('session')">SESSION</button><button id="tabAll" class="stab" onclick="statsTab('all')">ALL TIME</button></div>
+<div class="skeys" id="statsKeys"></div>
+<div class="schart" id="schartW"><div id="statsChart"></div><div class="stip" id="statsTip"></div></div>
+<p class="dim" id="statsNote"></p>
+</div>
 <nav class="socials" id="socials"></nav>
 <p class="mode8" id="mode8" style="display:none">[8-key Mode Active]</p>
 <div class="br">
@@ -2010,7 +2170,11 @@ function buildKeyBoxes() {
     const n = document.createElement("div"); n.className = "n"; n.textContent = String(k + 1);
     const b = document.createElement("div"); b.className = "b"; b.id = "keyb" + k;
     d.appendChild(n); d.appendChild(b);
-    box.appendChild(d);
+    if (typeof WM !== "undefined" && WM.set && WM.set.perKey) {   // SETTINGS > per-key totals: a counter under each key
+      const col = document.createElement("div"); col.className = "kcol"; col.appendChild(d);
+      const t = document.createElement("div"); t.className = "kt"; t.id = "kt" + k; col.appendChild(t);
+      box.appendChild(col);
+    } else box.appendChild(d);
   }
 }
 
@@ -2080,6 +2244,7 @@ function applyState(st) {
   $("sRepeat").textContent = st.repeatMs + " ms";
   $("err").textContent = st.error ? ("ERROR: " + st.error) : "";
   if (typeof st.clicksTotal === "number") syncTotal(st.clicksTotal, st.clicksSince);
+  if (Array.isArray(st.keyClicks)) syncKeys(st.keyClicks);
   if (typeof wmFitFresh === "function") wmFitFresh();
 }
 )HTMLX";
@@ -2591,6 +2756,7 @@ let menuCur = null;
 function menuSyncZ() { $("tbtns").classList.toggle("open", !!menuCur || Object.keys(MENU_BTN).some(i => $("menu-" + i).style.display === "block")); }
 function menuShow(id) {
   const m = $("menu-" + id); clearTimeout(m._t);
+  m.parentNode.classList.add("mo");
   m.classList.remove("closing"); m.style.display = "block"; m.classList.toggle("oldanim", wmOld()); void m.offsetWidth; m.classList.add("opening");
   $(MENU_BTN[id]).classList.add("on");
   if (id === "debugger") { const lg = $("log"); lg.scrollTop = lg.scrollHeight; }   // a hidden log forgets its scroll position
@@ -2599,7 +2765,7 @@ function menuHide(id) {
   const m = $("menu-" + id); if (m.style.display !== "block") return;
   $(MENU_BTN[id]).classList.remove("on");
   m.classList.remove("opening"); m.classList.add("closing"); clearTimeout(m._t);
-  m._t = setTimeout(() => { m.style.display = "none"; m.classList.remove("closing"); menuSyncZ(); }, wmAnimOK() ? ANIM_MS : 0);
+  m._t = setTimeout(() => { m.style.display = "none"; m.classList.remove("closing"); m.parentNode.classList.remove("mo"); menuSyncZ(); }, wmAnimOK() ? ANIM_MS : 0);
 }
 function menuToggle(id) {   // only one is open at a time
   const was = menuCur;
@@ -2630,6 +2796,12 @@ function wmBuild() {
     mb.onclick = () => wmMinimize(id);
     const h = document.createElement("h2"); h.textContent = "[ " + title + " ]";
     bar.appendChild(grip); bar.appendChild(mb); bar.appendChild(h);
+    if (id === "visualizer") {   // the stats (bar chart) button, top right of the window
+      const sb = document.createElement("button"); sb.className = "wbtn statbtn"; sb.title = "Click stats"; sb.setAttribute("aria-label", "Click stats");
+      sb.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="9" width="3" height="5"/><rect x="6.5" y="5" width="3" height="9"/><rect x="11" y="2" width="3" height="12"/></svg>';
+      sb.onclick = e => { e.stopPropagation(); statsToggle(); };
+      bar.appendChild(sb);
+    }
     const wi = new Image(); wi.className = "wicon"; wi.alt = ""; wi.draggable = false; wi.style.display = "none";
     wi.onload = () => { wi.style.display = ""; };                         // shown only once your icon file exists
     wi.src = "/api/icon/" + WIN_ICON[id] + "?v=" + Date.now();
@@ -2665,10 +2837,12 @@ function wmBuild() {
 
 // ---- settings (config\settings.json) ----
 function wmCleanSettings(raw) {
-  const s = { gearTop: true, cpsOff: false, cpsColor: true, animOff: false, oldAnim: false, eightKeys: false, social: {} };
+  const s = { gearTop: true, cpsOff: false, cpsColor: true, animOff: false, oldAnim: false, eightKeys: false, perKey: true, logStats: false, social: {} };
   if (raw && typeof raw === "object") {
     Object.keys(raw).forEach(k => { if (!has(s, k)) s[k] = raw[k]; });   // settings from other versions are kept, never dropped
     if (typeof raw.oldAnim === "boolean") s.oldAnim = raw.oldAnim;
+    if (typeof raw.perKey === "boolean") s.perKey = raw.perKey;
+    if (typeof raw.logStats === "boolean") s.logStats = raw.logStats;
     if (typeof raw.gearTop === "boolean") s.gearTop = raw.gearTop;
     if (typeof raw.cpsOff === "boolean") s.cpsOff = raw.cpsOff;
     if (typeof raw.cpsColor === "boolean") s.cpsColor = raw.cpsColor;
@@ -2680,11 +2854,11 @@ function wmCleanSettings(raw) {
 }
 function wmApplySettings() {
   const s = WM.set;
-  $("optGearTop").checked = s.gearTop; $("optCpsOff").checked = s.cpsOff; $("optCpsColor").checked = s.cpsColor; $("optAnimOff").checked = s.animOff; $("optOldAnim").checked = s.oldAnim;
+  $("optGearTop").checked = s.gearTop; $("optCpsOff").checked = s.cpsOff; $("optCpsColor").checked = s.cpsColor; $("optAnimOff").checked = s.animOff; $("optOldAnim").checked = s.oldAnim; $("optPerKey").checked = s.perKey; $("optLogStats").checked = s.logStats;
   document.documentElement.classList.toggle("noanim", s.animOff);
   $("optEight").checked = s.eightKeys; $("mode8").style.display = s.eightKeys ? "" : "none";
   $("divider").style.bottom = WORK_BOTTOM + "px";
-  if (WM.keysShown !== keyCount()) { WM.keysShown = keyCount(); applyKeyCount(); }
+  if (WM.keysShown !== keyCount() || WM.perShown !== !!s.perKey) { WM.keysShown = keyCount(); WM.perShown = !!s.perKey; applyKeyCount(); }
   $("cCpsRow").style.display = s.cpsOff ? "none" : "";
   if (typeof paintCounters === "function") paintCounters();
   $("tbtns").style.zIndex = s.gearTop ? "3" : "1";   // 3 = above the windows, 1 = windows can cover it
@@ -2703,11 +2877,12 @@ function wmApplySettings() {
 }
 function wmSettingChanged() {
   const s = WM.set;
-  s.gearTop = $("optGearTop").checked; s.cpsOff = $("optCpsOff").checked; s.cpsColor = $("optCpsColor").checked; s.animOff = $("optAnimOff").checked; s.oldAnim = $("optOldAnim").checked; s.eightKeys = $("optEight").checked;
+  s.gearTop = $("optGearTop").checked; s.cpsOff = $("optCpsOff").checked; s.cpsColor = $("optCpsColor").checked; s.animOff = $("optAnimOff").checked; s.oldAnim = $("optOldAnim").checked; s.perKey = $("optPerKey").checked; s.logStats = $("optLogStats").checked; s.eightKeys = $("optEight").checked;
   SOCIALS.forEach(x => { s.social[x.id] = $("optSocial_" + x.id).checked; });
-  const keysBefore = WM.keysShown;
+  const keysBefore = WM.keysShown, perBefore = WM.perShown;
   wmApplySettings();
-  if (keysBefore !== undefined && keysBefore !== WM.keysShown) wmRefitKeys();
+  if (keysBefore !== undefined && (keysBefore !== WM.keysShown || perBefore !== WM.perShown)) wmRefitKeys();   // 3 <-> 8 keys or the per-key counters change the height
+  if (typeof statsSettingsChanged === "function") statsSettingsChanged();
   const body = JSON.stringify(s), modeChanged = keysBefore !== undefined && keysBefore !== WM.keysShown;
   WM.schain = WM.schain.then(() => fetch("/api/settings", { method: "POST", headers: { "X-ESPdevice": "1", "Content-Type": "application/json" }, body: body }).catch(() => {}))
     .then(() => { if (modeChanged) return poll(); });   // 3-key and 8-key have separate profile lists: load the other one now
@@ -2731,6 +2906,113 @@ async function wmInit() {
   window.addEventListener("resize", wmOnResize);
   window.addEventListener("pagehide", wmFlush);
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") wmFlush(); });
+}
+)HTMLX";
+
+static const char* HTML_JS_STATS = R"HTMLX(
+// ================= CLICK STATS (v1.2) =================
+// Per-key totals under the keys (SETTINGS > per-key totals) and the stats panel (bar-chart button in the VISUALIZER title bar):
+// SESSION = clicks per minute since the app started (kept in memory by the app), ALL TIME = clicks per day (needs SETTINGS > log click stats).
+let kc = [0, 0, 0, 0, 0, 0, 0, 0], kcSrv = "";
+function syncKeys(a) { const sig = a.join(","); if (sig !== kcSrv) { kcSrv = sig; kc = a.slice(); paintKeyTotals(); } }
+function paintKeyTotals() {
+  for (let k = 0; k < keyCount(); k++) {
+    const el = $("kt" + k); if (!el) continue;
+    const f = fmtBig(kc[k]), tt = "Key " + (k + 1) + ": " + kc[k].toLocaleString("en-US") + " clicks since the app started";
+    if (el.textContent !== f.t) el.textContent = f.t;
+    if (el.title !== tt) el.title = tt;
+  }
+}
+const ST = { open: false, mode: "session", key: "all", data: null, timer: 0 };
+const two = n => (n < 10 ? "0" : "") + n;
+function fmtMin(m) { const d = new Date(m * 60000), t = two(d.getHours()) + ":" + two(d.getMinutes()), n = new Date(); return d.toDateString() === n.toDateString() ? t : two(d.getMonth() + 1) + "-" + two(d.getDate()) + " " + t; }
+function ymd(d) { return d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate()); }
+function statsOn() { return !!(WM.set && WM.set.logStats); }
+function statsToggle() { if (ST.open) statsClose(); else statsOpen(); }
+function statsOpen() {
+  if (ST.open) return; ST.open = true;
+  const p = $("statsPanel"); statsKeysBuild(); statsTabs(); p.style.display = "block";
+  if (wmAnimOK()) { if (wmOld()) p.animate([{ opacity: 0, transform: "translateX(-50%) scale(0.82)" }, { opacity: 1, transform: "translateX(-50%)" }], { duration: ANIM_MS, easing: ANIM_EASE }); else wmRoll(p, false, null, "backwards"); }
+  statsLoad(); ST.timer = setInterval(statsLoad, 3000);
+}
+function statsClose() {
+  if (!ST.open) return; ST.open = false; clearInterval(ST.timer);
+  const p = $("statsPanel"), hide = () => { if (!ST.open) p.style.display = "none"; };
+  if (wmAnimOK()) { try { p.animate([{ opacity: 1, transform: "translateX(-50%)" }, { opacity: 0, transform: "translateX(-50%) scale(0.82)" }], { duration: ANIM_MS, easing: ANIM_EASE }).onfinish = hide; } catch (e) { hide(); } setTimeout(hide, ANIM_MS + 150); } else hide();
+}
+document.addEventListener("keydown", e => { if (e.key === "Escape" && ST.open) statsClose(); });
+function statsTab(m) { if (m === "all" && !statsOn()) return; ST.mode = m; ST.data = null; statsTabs(); statsDraw(); statsLoad(); }
+function statsTabs() {
+  const on = statsOn(); if (!on && ST.mode === "all") ST.mode = "session";
+  $("tabSess").classList.toggle("on", ST.mode === "session"); $("tabAll").classList.toggle("on", ST.mode === "all");
+  $("tabAll").disabled = !on; $("tabAll").title = on ? "" : "turn on 'log click stats' in SETTINGS first";
+}
+function statsKeysBuild() {
+  const box = $("statsKeys"), n = keyCount(); box.textContent = "";
+  if (ST.key !== "all" && ST.key >= n) ST.key = "all";
+  const mk = (label, val) => { const b = document.createElement("button"); b.textContent = label; b.className = ST.key === val ? "on" : ""; b.onclick = () => { ST.key = val; statsKeysBuild(); statsDraw(); }; box.appendChild(b); };
+  mk("ALL", "all"); for (let k = 0; k < n; k++) mk(String(k + 1), k);
+}
+function statsSettingsChanged() { if (!ST.open) return; statsTabs(); statsKeysBuild(); statsLoad(); }
+async function statsLoad() {
+  const mode = ST.mode;
+  try { const r = await fetch("/api/stats?mode=" + mode + "&_=" + Date.now()); const d = await r.json(); if (d.mode === ST.mode) { ST.data = d; statsDraw(); } } catch (e) {}
+}
+function statsSeries() {
+  const d = ST.data; if (!d) return null;
+  const n = Math.min(d.keys || 3, 8);
+  const pick = a => { if (ST.key === "all") { let t = 0; for (let k = 0; k < n; k++) t += a[k] || 0; return t; } return a[ST.key] || 0; };
+  const bins = [];
+  if (d.mode === "session") {
+    const raw = d.data.map(pick), g = Math.max(1, Math.ceil(raw.length / 240));
+    for (let i = 0; i < raw.length; i += g) {
+      let t = 0; for (let j = i; j < Math.min(raw.length, i + g); j++) t += raw[j];
+      bins.push({ v: t, label: fmtMin(d.startMin + i) + (g > 1 ? " - " + fmtMin(d.startMin + Math.min(raw.length, i + g) - 1) : ""), first: fmtMin(d.startMin + i) });
+    }
+    while (bins.length < 15) { const t0 = d.startMin + bins.length * g; bins.push({ v: 0, label: fmtMin(t0), first: fmtMin(t0) }); }
+    return { bins: bins, unit: g === 1 ? "clicks per minute" : "clicks per " + g + " minutes", real: raw.length };
+  }
+  const keys = Object.keys(d.days).sort(); if (!keys.length) return { bins: [], unit: "clicks per day", real: 0 };
+  const p = s => { const a = s.split("-"); return new Date(+a[0], +a[1] - 1, +a[2]); };
+  let cur = p(keys[0]); const end = p(keys[keys.length - 1]);
+  while (cur <= end) { const k = ymd(cur); bins.push({ v: d.days[k] ? pick(d.days[k]) : 0, label: k, first: k }); cur = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + 1); }
+  const real = bins.length; while (bins.length > 365) bins.shift();
+  while (bins.length < 14) { const k = ymd(cur); bins.push({ v: 0, label: k, first: k }); cur = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + 1); }
+  return { bins: bins, unit: "clicks per day", real: real };
+}
+function niceMax(m) { if (m <= 0) return 4; const p = Math.pow(10, Math.floor(Math.log10(m))), f = m / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 4 ? 4 : f <= 6 ? 6 : f <= 8 ? 8 : 10) * p; }
+function statsDraw() {
+  if (!ST.open) return;
+  const box = $("statsChart"), note = $("statsNote"), s = statsSeries();
+  if (!s || !s.bins.length) { box.innerHTML = '<div class="sempty">' + (ST.mode === "all" && ST.data ? "No data yet. Click stats are saved from the moment 'log click stats' is turned on." : "Loading...") + "</div>"; note.textContent = ""; ST.bins = null; return; }
+  const W = Math.max(200, box.clientWidth), H = Math.max(120, box.clientHeight), L = 48, R = 10, T = 12, B = 24, pw = W - L - R, ph = H - T - B;
+  let max = 0, sum = 0; s.bins.forEach(b => { if (b.v > max) max = b.v; sum += b.v; });
+  const top = niceMax(max), bw = pw / s.bins.length, ticks = top >= 2 ? [0, top / 2, top] : [0, top];
+  let g = "";
+  ticks.forEach(v => { const y = T + ph - ph * v / top; g += '<line class="sgrid" x1="' + L + '" x2="' + (W - R) + '" y1="' + y + '" y2="' + y + '"/><text class="stxt" x="' + (L - 6) + '" y="' + (y + 4) + '" text-anchor="end">' + fmtBig(v).t + "</text>"; });
+  s.bins.forEach((b, i) => { if (b.v <= 0) return; const h = Math.max(1, ph * b.v / top); g += '<rect class="sbarr" x="' + (L + i * bw + bw * 0.12).toFixed(1) + '" y="' + (T + ph - h).toFixed(1) + '" width="' + Math.max(1, bw * 0.76).toFixed(1) + '" height="' + h.toFixed(1) + '"/>'; });
+  g += '<text class="stxt" x="' + L + '" y="' + (H - 6) + '">' + s.bins[0].first + '</text><text class="stxt" x="' + (W - R) + '" y="' + (H - 6) + '" text-anchor="end">' + s.bins[s.bins.length - 1].first + "</text>";
+  box.innerHTML = '<svg viewBox="0 0 ' + W + " " + H + '" width="' + W + '" height="' + H + '">' + g + "</svg>";
+  ST.bins = { list: s.bins, L: L, bw: bw, W: W };
+  note.textContent = (ST.key === "all" ? "all keys" : "key " + (ST.key + 1)) + "  |  " + s.unit + "  |  in view: " + sum.toLocaleString("en-US") + "  |  busiest: " + max.toLocaleString("en-US") +
+    (ST.mode === "session" ? "  |  since the app started" : "");
+}
+(function () {
+  const w = () => $("schartW");
+  document.addEventListener("mousemove", e => {
+    if (!ST.open || !ST.bins) return;
+    const r = w().getBoundingClientRect(), x = e.clientX - r.left, tip = $("statsTip");
+    const i = Math.floor((x - ST.bins.L) / ST.bins.bw);
+    if (e.clientY < r.top || e.clientY > r.bottom || i < 0 || i >= ST.bins.list.length) { tip.style.display = "none"; return; }
+    const b = ST.bins.list[i];
+    tip.textContent = b.label + ": " + b.v.toLocaleString("en-US") + " clicks"; tip.style.display = "block";
+    tip.style.left = Math.min(Math.max(0, x + 12), r.width - tip.offsetWidth - 4) + "px"; tip.style.top = Math.max(0, e.clientY - r.top - 30) + "px";
+  });
+})();
+async function clearStats() {
+  if (!confirm("Clear all click stats (the per-key counts, the SESSION graph and the saved ALL TIME history)?")) return;
+  applyState(await api("/api/stats/clear", {}));
+  if (ST.open) statsLoad();
 }
 )HTMLX";
 
@@ -2784,7 +3066,7 @@ function onEvent(v) {
   if (v.y === "S") { held = v.held; paintKeys(); return; }
   const t = (v.t / 1e6).toFixed(3).padStart(9, " ");
   const key = "KEY" + (v.k + 1);
-  if (v.y === "P") { if (performance.now() > replayUntil) cpsHit(); held[v.k] = true; paintKeys(); logLine("P", "[" + t + "s] " + key + " DOWN  " + v.m.padEnd(14, " ") + (v.l ? v.l + " us" : "(paused)")); }
+  if (v.y === "P") { if (performance.now() > replayUntil) { cpsHit(); kc[v.k]++; } held[v.k] = true; paintKeys(); logLine("P", "[" + t + "s] " + key + " DOWN  " + v.m.padEnd(14, " ") + (v.l ? v.l + " us" : "(paused)")); }
   else if (v.y === "R") { held[v.k] = false; paintKeys(); logLine("R", "[" + t + "s] " + key + " UP    " + v.m); }
   else if (v.y === "X") { held[v.k] = false; paintKeys(); logLine("X", "[" + t + "s] " + key + " TIMEOUT " + v.m); }
   else if (v.y === "C") { logLine("C", "[" + t + "s] CONNECTED " + v.m); }
@@ -2990,6 +3272,7 @@ function fmtBig(n) {
   }
 }
 function paintCounters() {
+  paintKeyTotals();
   const now = performance.now(), st = (typeof WM !== "undefined" && WM.set) ? WM.set : { cpsOff: false, cpsColor: true };
   while (cpsTimes.length && now - cpsTimes[0] > 1000) cpsTimes.shift();
   const n = st.cpsOff ? 0 : cpsTimes.length;
@@ -3043,6 +3326,7 @@ static std::string WebsiteHtml() {
     s += HTML_JS_WM1;
     s += HTML_JS_WM2;
     s += HTML_JS_WM3;
+    s += HTML_JS_STATS;
     s += HTML_JS2;
     const std::string marker = "@@VER@@", ver = ESP_VERSION;
     for (size_t p = s.find(marker); p != std::string::npos; p = s.find(marker, p + ver.size())) s.replace(p, marker.size(), ver);
