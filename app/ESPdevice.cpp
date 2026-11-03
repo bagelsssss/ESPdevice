@@ -1348,6 +1348,24 @@ static void HandleRequest(SOCKET client) {
             response = HttpResponse("200 OK", "application/json", "{\"ok\":true}");
         }
     }
+    else if (method == "GET" && path == "/api/themeadv") {
+        std::string adv;
+        {
+            std::lock_guard<std::mutex> lk(g_themeMutex);
+            std::ifstream f(g_configDir / L"theme_advanced.json", std::ios::binary);
+            if (f.is_open()) { std::ostringstream ss; ss << f.rdbuf(); adv = ss.str(); }
+        }
+        response = HttpResponse("200 OK", "application/json", adv.empty() ? "{}" : adv);
+    }
+    else if (method == "POST" && path == "/api/themeadv") {   // advanced theming edits (stored as sent; the page validates every value)
+        if (body.empty() || body.size() > 300000 || body[0] != '{') {
+            response = HttpResponse("400 Bad Request", "application/json", "{\"ok\":false}");
+        } else {
+            std::lock_guard<std::mutex> lk(g_themeMutex);
+            WriteFileAtomic(g_configDir / L"theme_advanced.json", body);
+            response = HttpResponse("200 OK", "application/json", "{\"ok\":true}");
+        }
+    }
     else if (method == "GET" && (path == "/api/layout" || path == "/api/settings")) {
         // Window layout and page settings: stored as JSON exactly as the page sent it (the page validates everything it reads).
         const wchar_t* fn = (path == "/api/layout") ? L"layout.json" : L"settings.json";
@@ -1973,6 +1991,20 @@ html.noanim .menu.opening, html.noanim .menu.closing, html.noanim .crow span.pop
 .sbarr { fill: var(--c-stat-value); } .sgrid { stroke: var(--c-border); opacity: 0.4; } .stxt { fill: var(--c-dim); font-size: 11px; font-family: inherit; }
 .sempty { padding: 18px; color: var(--c-dim); }
 .stip { position: absolute; display: none; pointer-events: none; background: var(--c-bg); border: 1px solid var(--c-border); padding: 2px 6px; white-space: nowrap; z-index: 2; }
+.advgrp { margin: 8px 0; border: 1px solid var(--c-border); padding: 2px 8px; }
+.advgrp summary { cursor: pointer; color: var(--c-heading); padding: 4px 0; user-select: none; }
+.advrow { margin: 6px 0 8px; padding: 6px 0 2px; border-top: 1px dashed var(--c-dim); }
+.advrow.flash { outline: 2px solid var(--c-fg); outline-offset: 2px; }
+.advlab { display: block; margin-bottom: 4px; }
+.advprops { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.advp { display: flex; align-items: center; gap: 4px; }
+.advp .lab { color: var(--c-dim); } .advp.ov .lab { color: var(--c-fg); text-decoration: underline; }
+.advp input[type=text] { width: 78px; } .advp input[type=number] { width: 56px; font-family: var(--font); font-size: var(--size); color: var(--c-input-fg); background: var(--c-input-bg); border: 1px solid var(--c-input-border); }
+.advp .x { padding: 0 6px; }
+#pickBox { position: fixed; z-index: 300; pointer-events: none; outline: 2px solid #ff2bd6; background: rgba(255, 43, 214, 0.12); display: none; }
+#pickLbl { position: fixed; z-index: 301; pointer-events: none; background: #ff2bd6; color: #fff; padding: 1px 6px; font-size: 12px; display: none; white-space: nowrap; }
+#pickBar { position: fixed; left: 50%; top: 10px; transform: translateX(-50%); z-index: 302; background: var(--c-bg); color: var(--c-fg); border: 1px solid var(--c-border); padding: 6px 12px; display: none; }
+body.picking, body.picking * { cursor: crosshair !important; }
 .opt { display: flex; align-items: center; gap: 8px; margin: 5px 0; cursor: pointer; user-select: none; }
 .opt input { width: 14px; height: 14px; margin: 0; accent-color: var(--c-fg); }
 /* small / square browser window: the social links hide, and [8-key Mode Active] takes their place at the bottom left */
@@ -2017,6 +2049,7 @@ static const char* HTML_BODY = R"HTMLX(<body>
   <div class="key small on"><div class="n">1</div></div>
 </div>
 <div id="themeFields"></div>
+<div id="advWrap" style="display:none"></div>
 </div></div>
 <div class="tb tbs"><button class="gear" id="gearBtn" onclick="menuToggle('settings')" title="Settings">[ SETTINGS ]</button>
 <div class="menu" id="menu-settings">
@@ -2035,6 +2068,9 @@ static const char* HTML_BODY = R"HTMLX(<body>
 <label class="opt"><input type="checkbox" id="optLogStats" onchange="wmSettingChanged()"> log click stats</label>
 <p class="dim">Logging saves clicks per day to config\clickstats.json (only while it is on). It is needed for the ALL TIME graph.</p>
 <div class="row"><button onclick="clearStats()">CLEAR CLICK STATS</button></div>
+<div class="setgrp">THEMING</div>
+<label class="opt"><input type="checkbox" id="optAdvTheme" onchange="wmSettingChanged()"> advanced theming</label>
+<p class="dim">Edit any element of the page in the THEMES panel (on a custom theme). Off = the normal theme only.</p>
 <div class="setgrp">ANIMATIONS</div>
 <label class="opt"><input type="checkbox" id="optAnimOff" onchange="wmSettingChanged()"> disable animations</label>
 <label class="opt"><input type="checkbox" id="optOldAnim" onchange="wmSettingChanged()"> old animations</label>
@@ -2111,6 +2147,8 @@ static const char* HTML_BODY = R"HTMLX(<body>
 <div class="schart" id="schartW"><div id="statsChart"></div><div class="stip" id="statsTip"></div></div>
 <p class="dim" id="statsNote"></p>
 </div>
+<div id="pickBox"></div><div id="pickLbl"></div>
+<div id="pickBar" class="pickui" style="display:none">Click any part of the page to edit it. <button onclick="advPickStop()">CANCEL</button></div>
 <nav class="socials" id="socials"></nav>
 <p class="mode8" id="mode8" style="display:none">[8-key Mode Active]</p>
 <div class="br">
@@ -2280,7 +2318,7 @@ function applyColors(c) {
   if (typeof tintLogo === "function") tintLogo(); // default logo follows the theme colours
   try { localStorage.setItem("espdevice-theme", JSON.stringify(c)); } catch (e) {} // instant repaint next load; real copy lives in config\theme.json
 }
-function applyTheme(name) { applyColors(themeColors(name)); }
+function applyTheme(name) { applyColors(themeColors(name)); if (typeof advApply === "function") advApply(true); }
 
 function saveTheme(immediate) { // colour dragging is debounced; picking/copying/renaming/deleting saves at once
   clearTimeout(themeSaveTimer);
@@ -2315,6 +2353,7 @@ function setThemeColor(key, val) {
 function renderThemeFields() {
   const wrap = $("themeFields");
   wrap.innerHTML = "";
+  if (typeof advRender === "function") advRender();   // the advanced section follows the chosen theme
   const colors = themeColors(THEME.active);
   const ro = isBuiltin(THEME.active);
   $("themeNote").textContent = ro
@@ -2356,6 +2395,7 @@ function copyTheme() {
   const n = cleanThemeName(raw);
   if (!n) return;
   const name = uniqueThemeName(n, null);
+  advCopy(THEME.active, name);
   THEME.custom.push({ name: name, colors: Object.assign({}, themeColors(THEME.active)) });
   THEME.active = name;
   applyTheme(name); renderThemeSelect(); renderThemeFields(); saveTheme(true);
@@ -2367,7 +2407,9 @@ function renameTheme() {
   if (raw === null) return;
   const n = cleanThemeName(raw);
   if (!n) return;
+  const oldName = t.name;
   t.name = uniqueThemeName(n, t);
+  advRename(oldName, t.name);
   THEME.active = t.name;
   renderThemeSelect(); renderThemeFields(); saveTheme(true);
 }
@@ -2376,6 +2418,7 @@ function deleteTheme() {
   if (!t) { alert("Built-in themes can't be deleted."); return; }
   if (!confirm("Delete theme '" + t.name + "'?")) return;
   THEME.custom = THEME.custom.filter(x => x !== t);
+  advDelete(t.name);
   THEME.active = "Light";
   applyTheme("Light"); renderThemeSelect(); renderThemeFields(); saveTheme(true);
 }
@@ -2837,12 +2880,13 @@ function wmBuild() {
 
 // ---- settings (config\settings.json) ----
 function wmCleanSettings(raw) {
-  const s = { gearTop: true, cpsOff: false, cpsColor: true, animOff: false, oldAnim: false, eightKeys: false, perKey: true, logStats: false, social: {} };
+  const s = { gearTop: true, cpsOff: false, cpsColor: true, animOff: false, oldAnim: false, eightKeys: false, perKey: true, logStats: false, advTheme: false, social: {} };
   if (raw && typeof raw === "object") {
     Object.keys(raw).forEach(k => { if (!has(s, k)) s[k] = raw[k]; });   // settings from other versions are kept, never dropped
     if (typeof raw.oldAnim === "boolean") s.oldAnim = raw.oldAnim;
     if (typeof raw.perKey === "boolean") s.perKey = raw.perKey;
     if (typeof raw.logStats === "boolean") s.logStats = raw.logStats;
+    if (typeof raw.advTheme === "boolean") s.advTheme = raw.advTheme;
     if (typeof raw.gearTop === "boolean") s.gearTop = raw.gearTop;
     if (typeof raw.cpsOff === "boolean") s.cpsOff = raw.cpsOff;
     if (typeof raw.cpsColor === "boolean") s.cpsColor = raw.cpsColor;
@@ -2854,7 +2898,8 @@ function wmCleanSettings(raw) {
 }
 function wmApplySettings() {
   const s = WM.set;
-  $("optGearTop").checked = s.gearTop; $("optCpsOff").checked = s.cpsOff; $("optCpsColor").checked = s.cpsColor; $("optAnimOff").checked = s.animOff; $("optOldAnim").checked = s.oldAnim; $("optPerKey").checked = s.perKey; $("optLogStats").checked = s.logStats;
+  $("optGearTop").checked = s.gearTop; $("optCpsOff").checked = s.cpsOff; $("optCpsColor").checked = s.cpsColor; $("optAnimOff").checked = s.animOff; $("optOldAnim").checked = s.oldAnim; $("optPerKey").checked = s.perKey; $("optLogStats").checked = s.logStats; $("optAdvTheme").checked = s.advTheme;
+  if (typeof advApply === "function") { advApply(true); advRender(); }
   document.documentElement.classList.toggle("noanim", s.animOff);
   $("optEight").checked = s.eightKeys; $("mode8").style.display = s.eightKeys ? "" : "none";
   $("divider").style.bottom = WORK_BOTTOM + "px";
@@ -2877,7 +2922,7 @@ function wmApplySettings() {
 }
 function wmSettingChanged() {
   const s = WM.set;
-  s.gearTop = $("optGearTop").checked; s.cpsOff = $("optCpsOff").checked; s.cpsColor = $("optCpsColor").checked; s.animOff = $("optAnimOff").checked; s.oldAnim = $("optOldAnim").checked; s.perKey = $("optPerKey").checked; s.logStats = $("optLogStats").checked; s.eightKeys = $("optEight").checked;
+  s.gearTop = $("optGearTop").checked; s.cpsOff = $("optCpsOff").checked; s.cpsColor = $("optCpsColor").checked; s.animOff = $("optAnimOff").checked; s.oldAnim = $("optOldAnim").checked; s.perKey = $("optPerKey").checked; s.logStats = $("optLogStats").checked; s.advTheme = $("optAdvTheme").checked; s.eightKeys = $("optEight").checked;
   SOCIALS.forEach(x => { s.social[x.id] = $("optSocial_" + x.id).checked; });
   const keysBefore = WM.keysShown, perBefore = WM.perShown;
   wmApplySettings();
@@ -3014,6 +3059,255 @@ async function clearStats() {
   applyState(await api("/api/stats/clear", {}));
   if (ST.open) statsLoad();
 }
+)HTMLX";
+
+static const char* HTML_JS_ADV = R"HTMLX(
+// ================= ADVANCED THEMING (v1.2) =================
+// SETTINGS > advanced theming (off by default): every element of the page can be restyled one by one (colour, border colour and
+// thickness, text size, ...). The edits of a custom theme are turned into a small override stylesheet, so the normal theme stays
+// untouched. They are saved in config\theme_advanced.json (a separate file) as { "v":1, "themes": { "<theme name>": { "<element>.<property>": value } } }.
+const ADV_SRC = `#PAGE
+page|Page background and text|html, body|cb
+dim|Secondary text (hints, notes)|.dim, .logohint, .logohint a|cs
+err|Error text|.err|cs
+divider|Divider line|.divider|b
+#HEADER
+title|Title text|.brand|cs
+cursor|Title cursor|.brand .cur|c
+art|Title art|.art|c
+status|Status line|.status|cs
+credit|Corner credit|.credit|cs
+social|Social links|.socials a|cs
+mode8|8-key mode text|.mode8|cs
+#TOP-RIGHT BUTTONS
+topbtn|THEMES / SETTINGS / DEBUGGER buttons|.gear|cbdws
+topbtnh|Top buttons: hover|.gear:hover|cbd
+topbtno|Top buttons: open|.gear.on|cbd
+#WINDOWS
+win|Window frame|.win|bdw
+wtitle|Window title|.wbar h2|cs
+wtitlef|Window title (front window)|.win.front .wbar h2|c
+grip|Window grip mark|.grip|cdw
+wbtn|Window buttons (minimize, stats)|.wbtn|cbdw
+rsz|Resize corner marks|.rsz::after|d
+mini|Icon window (minimized)|.mini|bdw
+mph|Icon placeholder text|.mph|c
+mcar|Icon window open button|.mcar|cbd
+#MENUS
+menu|Pull-down panels|.menu|bdw
+setgrp|Menu headings|.setgrp, .tgroup|cs
+opt|Checkbox labels|.opt|cs
+#BUTTONS AND INPUTS
+btn|All buttons|button|cbdws
+btnh|Buttons: hover|button:hover|cbd
+btnon|Active buttons (capture, tabs, chosen key)|button.cap.on, .stab.on, .skeys button.on|cb
+btnoff|Buttons: disabled|button:disabled|cbd
+inp|Inputs and dropdowns|select, input[type=text]|cbdws
+#PROFILE
+pcount|Profile counter text|#profileCount|cs
+#VISUALIZER
+keyoff|Keys (not pressed)|.key|cbdw
+keyon|Keys (pressed)|.key.on|cbd
+keyn|Key number|.key .n|cs
+keyb|Key binding text|.key .b|cs
+kt|Per-key totals|.kt|cs
+cps|CPS label|#cCpsRow|cs
+cpsn|CPS number|#cCps|cs
+total|Total label|#cTotalRow|cs
+totaln|Total number|#cTotal|cs
+#KEYBINDS
+th|Table header|th|cbs
+td|Table cells|td|cs
+tline|Table lines|td, th|dw
+#DEBUGGER
+stlab|Stat labels|.stats|cs
+stval|Stat values|.stats div span|c
+log|Log box|#log|cbdws
+ld|Log: key down lines|.l-P|c
+lu|Log: key up lines|.l-R|c
+lx|Log: timeout lines|.l-X|c
+lc|Log: connect lines|.l-C, .l-D|c
+li|Log: info lines|.l-I|c
+#CLICK STATS
+sp|Stats panel|.statspanel|bdw
+spt|Stats title|.sbar h2|cs
+sch|Graph box|.schart|bdw
+sbar|Graph bars|.sbarr|f
+sgrid|Graph grid lines|.sgrid|k
+sx|Graph labels|.stxt|fs
+stip|Graph tooltip|.stip|cbd`;
+const ADV_P = { c: ["color", "text", "c"], b: ["background-color", "background", "c"], d: ["border-color", "border", "c"], w: ["border-width", "thickness", "n", 0, 8], s: ["font-size", "size", "n", 8, 48], f: ["fill", "fill", "c"], k: ["stroke", "line", "c"] };
+const ADV_FONTS = { "Consolas": 'Consolas, "Lucida Console", monospace', "Courier New": '"Courier New", monospace', "Lucida Console": '"Lucida Console", Consolas, monospace', "Arial": "Arial, Helvetica, sans-serif", "Verdana": "Verdana, sans-serif", "Georgia": "Georgia, serif", "Times New Roman": '"Times New Roman", serif', "Trebuchet MS": '"Trebuchet MS", sans-serif', "Segoe UI": '"Segoe UI", sans-serif', "Tahoma": "Tahoma, sans-serif" };
+const ADV_GROUPS = [], ADV_ALL = [];
+ADV_SRC.split("\n").forEach(l => {
+  if (l[0] === "#") { ADV_GROUPS.push({ name: l.slice(1), els: [] }); return; }
+  const a = l.split("|"), el = { id: a[0], label: a[1], sel: a[2], props: a[3].split(""), group: ADV_GROUPS.length - 1 };
+  ADV_GROUPS[ADV_GROUPS.length - 1].els.push(el); ADV_ALL.push(el);
+});
+let ADVD = {}, ADVX = {}, ADV_READY = false, advSaveT = 0, advRT = 0;
+const advOf = create => { if (isBuiltin(THEME.active)) return null; if (create && !ADVD[THEME.active]) ADVD[THEME.active] = {}; return ADVD[THEME.active] || null; };
+const advOn = () => !!(WM.set && WM.set.advTheme);
+function advCss() {
+  const o = advOf(false); if (!advOn() || !o) return "";
+  let css = "", root = "";
+  if (ADV_FONTS[o["g.font"]]) root += "--font:" + ADV_FONTS[o["g.font"]] + ";";
+  const gs = parseInt(o["g.size"], 10); if (gs >= 10 && gs <= 28) root += "--size:" + gs + "px;";
+  if (root) css += "html:root{" + root + "}\n";
+  ADV_ALL.forEach(el => {
+    let d = "";
+    el.props.forEach(p => {
+      const v = o[el.id + "." + p], P = ADV_P[p]; if (v === undefined) return;
+      if (P[2] === "c") { if (HEX.test(v)) d += P[0] + ":" + v + " !important;"; }
+      else { const n = parseInt(v, 10); if (n >= P[3] && n <= P[4]) { d += P[0] + ":" + n + "px !important;"; if (p === "w" && n > 0) d += "border-style:solid !important;"; } }
+    });
+    if (d) css += el.sel + "{" + d + "}\n";
+  });
+  return css;
+}
+function advApply(refit) {
+  if (!ADV_READY || !WM.set) return;
+  const css = advCss();
+  let st = $("advStyle"); if (!st) { st = document.createElement("style"); st.id = "advStyle"; document.head.appendChild(st); }
+  if (st.textContent !== css) st.textContent = css;
+  try { localStorage.setItem("espdevice-advcss", css); } catch (e) {}
+  if (refit && WM.L && WM.L.auto) { clearTimeout(advRT); advRT = setTimeout(() => { wmRelayoutAuto(); wmPlaceAll(); wmSave(); }, 150); }   // bigger or smaller text: an untouched layout re-fits
+}
+function advSave() { clearTimeout(advSaveT); advSaveT = setTimeout(() => { api("/api/themeadv", Object.assign({}, ADVX, { v: 1, themes: ADVD })).catch(() => {}); }, 400); }
+function advSet(key, val) {
+  const o = advOf(true); if (!o) return;
+  if (val === "" || val == null) delete o[key]; else o[key] = val;
+  advApply(true); advSave();
+}
+async function advLoad() {
+  try {
+    const j = JSON.parse((await (await fetch("/api/themeadv")).text()) || "{}");
+    ADVX = {}; Object.keys(j).forEach(k => { if (k !== "themes") ADVX[k] = j[k]; });   // fields from other versions are kept
+    ADVD = {};
+    if (j.themes && typeof j.themes === "object") Object.keys(j.themes).forEach(n => {
+      const t = j.themes[n]; if (!t || typeof t !== "object" || n.length > 24) return;
+      const o = {}; Object.keys(t).forEach(k => { if (/^[a-z0-9.\-]{1,24}$/.test(k) && typeof t[k] === "string" && /^[#\w .,-]{0,40}$/.test(t[k])) o[k] = t[k]; });
+      ADVD[n] = o;
+    });
+  } catch (e) {}
+  ADV_READY = true; advApply(); advRender();
+}
+function advCopy(from, to) { if (ADVD[from]) ADVD[to] = Object.assign({}, ADVD[from]); advSave(); }
+function advRename(from, to) { if (ADVD[from]) { ADVD[to] = ADVD[from]; delete ADVD[from]; advSave(); } }
+function advDelete(n) { if (ADVD[n]) { delete ADVD[n]; advSave(); } }
+function advResetAll() { if (!confirm("Remove every advanced edit of this theme?")) return; delete ADVD[THEME.active]; advApply(true); advSave(); advRender(); }
+
+function rgb2hex(c) { const m = /rgba?\((\d+), *(\d+), *(\d+)/.exec(c || ""); return m ? "#" + [m[1], m[2], m[3]].map(x => (+x).toString(16).padStart(2, "0")).join("") : "#000000"; }
+function advDefault(el, p) {   // what the element looks like now (shown until you change it)
+  let n = null; try { n = document.querySelector(el.sel); } catch (e) {}
+  if (!n) return ADV_P[p][2] === "c" ? "#000000" : "";
+  const cs = getComputedStyle(n), P = ADV_P[p][0];
+  if (ADV_P[p][2] === "c") { const v = cs.getPropertyValue(P); return rgb2hex(v === "none" ? "" : v); }
+  return String(Math.round(parseFloat(cs.getPropertyValue(P)) || 0));
+}
+function advCtl(el, p, o, ro) {
+  const P = ADV_P[p], key = el.id + "." + p, box = document.createElement("span"); box.className = "advp";
+  const lab = document.createElement("span"); lab.className = "lab"; lab.textContent = P[1]; box.appendChild(lab);
+  const x = document.createElement("button"); x.className = "x"; x.textContent = "x"; x.title = "Back to the normal look";
+  const mark = () => { box.classList.toggle("ov", o[key] !== undefined); x.disabled = ro || o[key] === undefined; };
+  let inp, hex = null;
+  if (P[2] === "c") {
+    inp = document.createElement("input"); inp.type = "color"; inp.value = o[key] || advDefault(el, p);
+    hex = document.createElement("input"); hex.type = "text"; hex.maxLength = 7; hex.value = o[key] || ""; hex.placeholder = inp.value;
+    hex.setAttribute("spellcheck", "false"); hex.setAttribute("autocomplete", "off");
+    inp.addEventListener("input", () => { hex.value = inp.value; advSet(key, inp.value); mark(); });
+    hex.addEventListener("input", () => { let v = hex.value.trim(); if (v && v[0] !== "#") v = "#" + v; if (HEX.test(v)) { v = v.toLowerCase(); inp.value = v; advSet(key, v); mark(); } });
+    x.onclick = () => { advSet(key, null); hex.value = ""; inp.value = advDefault(el, p); mark(); };
+  } else {
+    inp = document.createElement("input"); inp.type = "number"; inp.min = P[3]; inp.max = P[4]; inp.step = 1; inp.value = o[key] || ""; inp.placeholder = advDefault(el, p);
+    inp.addEventListener("input", () => { const v = parseInt(inp.value, 10); if (v >= P[3] && v <= P[4]) advSet(key, String(v)); else if (inp.value === "") advSet(key, null); mark(); });
+    x.onclick = () => { advSet(key, null); inp.value = ""; inp.placeholder = advDefault(el, p); mark(); };
+  }
+  inp.disabled = ro; if (hex) hex.disabled = ro;
+  box.appendChild(inp); if (hex) box.appendChild(hex); box.appendChild(x); mark(); return box;
+}
+function advRender() {
+  const wrap = $("advWrap"); if (!wrap) return;
+  wrap.textContent = "";
+  if (!advOn()) { wrap.style.display = "none"; return; }
+  wrap.style.display = "";
+  const ro = isBuiltin(THEME.active), o = advOf(!ro) || {};   // the live object of this theme: the controls read and write it
+  const h = document.createElement("div"); h.className = "tgroup"; h.textContent = "-- ADVANCED: EVERY ELEMENT --"; wrap.appendChild(h);
+  const note = document.createElement("p"); note.className = "dim";
+  note.textContent = ro ? "Built-in themes can't be edited. Press COPY first." : "Click PICK, then click any part of the page to edit it. Only what you change is saved (in this theme).";
+  wrap.appendChild(note);
+  const bar = document.createElement("div"); bar.className = "row";
+  const pk = document.createElement("button"); pk.textContent = "PICK AN ELEMENT"; pk.disabled = ro; pk.onclick = advPickStart;
+  const ra = document.createElement("button"); ra.textContent = "RESET ALL ADVANCED"; ra.disabled = ro; ra.onclick = advResetAll;
+  bar.appendChild(pk); bar.appendChild(ra); wrap.appendChild(bar);
+  const g0 = document.createElement("div"); g0.className = "advrow"; g0.id = "adv-g";
+  const fl = document.createElement("span"); fl.className = "advlab"; fl.textContent = "Text (whole page)"; g0.appendChild(fl);
+  const pr = document.createElement("div"); pr.className = "advprops";
+  const fs = document.createElement("span"); fs.className = "advp"; fs.innerHTML = '<span class="lab">font</span>';
+  const sel = document.createElement("select"); sel.disabled = ro;
+  ["Default"].concat(Object.keys(ADV_FONTS)).forEach(n => { const op = document.createElement("option"); op.value = n; op.textContent = n; sel.appendChild(op); });
+  sel.value = o["g.font"] || "Default"; sel.onchange = () => advSet("g.font", sel.value === "Default" ? null : sel.value);
+  fs.appendChild(sel); pr.appendChild(fs);
+  const sz = document.createElement("span"); sz.className = "advp"; sz.innerHTML = '<span class="lab">base size</span>';
+  const sn = document.createElement("input"); sn.type = "number"; sn.min = 10; sn.max = 28; sn.step = 1; sn.value = o["g.size"] || ""; sn.placeholder = "14"; sn.disabled = ro;
+  sn.oninput = () => { const v = parseInt(sn.value, 10); if (v >= 10 && v <= 28) advSet("g.size", String(v)); else if (sn.value === "") advSet("g.size", null); };
+  sz.appendChild(sn); pr.appendChild(sz); g0.appendChild(pr); wrap.appendChild(g0);
+  ADV_GROUPS.forEach((g, gi) => {
+    const d = document.createElement("details"); d.className = "advgrp"; d.id = "advg" + gi;
+    const sm = document.createElement("summary"); sm.textContent = g.name; d.appendChild(sm);
+    g.els.forEach(el => {
+      const r = document.createElement("div"); r.className = "advrow"; r.id = "adv-" + el.id;
+      const l = document.createElement("span"); l.className = "advlab"; l.textContent = el.label; r.appendChild(l);
+      const ps = document.createElement("div"); ps.className = "advprops";
+      el.props.forEach(p => ps.appendChild(advCtl(el, p, o, ro)));
+      r.appendChild(ps); d.appendChild(r);
+    });
+    wrap.appendChild(d);
+  });
+}
+
+)HTMLX";
+
+static const char* HTML_JS_ADV2 = R"HTMLX(
+// ---- pick an element: click anything on the page to jump to its settings ----
+const PK = { on: false };
+function advHit(t) {   // the element entry whose selector is closest to what was clicked
+  let best = null, bd = 1e9, bn = null;
+  ADV_ALL.forEach(el => {
+    if (/:(hover|disabled)/.test(el.sel)) return;
+    const sel = el.sel.replace(/::after/g, "");
+    let n = t, d = 0;
+    while (n && n.nodeType === 1) { let m = false; try { m = n.matches(sel); } catch (e) {} if (m) break; n = n.parentElement; d++; }
+    if (n && n.nodeType === 1 && d < bd) { bd = d; best = el; bn = n; }
+  });
+  return best ? { el: best, node: bn } : null;
+}
+function advPickStart() {
+  if (isBuiltin(THEME.active)) { alert("Built-in themes can't be edited. Press COPY first."); return; }
+  menuClose(); PK.on = true; document.body.classList.add("picking"); $("pickBar").style.display = "block";
+}
+function advPickStop() { PK.on = false; document.body.classList.remove("picking"); ["pickBar", "pickBox", "pickLbl"].forEach(i => { $(i).style.display = "none"; }); }
+function advReveal(id) {
+  menuClose(); menuToggle("theme");
+  const row = $("adv-" + id); if (!row) return;
+  const g = row.closest("details"); if (g) g.open = true;
+  setTimeout(() => { row.scrollIntoView({ block: "center" }); row.classList.add("flash"); setTimeout(() => row.classList.remove("flash"), 1500); }, 60);
+}
+document.addEventListener("pointermove", e => {
+  if (!PK.on || e.target.closest(".pickui")) return;
+  const h = advHit(e.target), b = $("pickBox"), l = $("pickLbl");
+  if (!h) { b.style.display = "none"; l.style.display = "none"; return; }
+  const r = h.node.getBoundingClientRect();
+  b.style.cssText = "display:block;left:" + r.left + "px;top:" + r.top + "px;width:" + r.width + "px;height:" + r.height + "px";
+  l.textContent = h.el.label; l.style.cssText = "display:block;left:" + Math.max(0, r.left) + "px;top:" + Math.max(0, r.top - 20) + "px";
+}, true);
+["pointerdown", "pointerup", "mousedown", "mouseup", "dblclick", "contextmenu"].forEach(t => document.addEventListener(t, e => { if (PK.on && !e.target.closest(".pickui")) { e.preventDefault(); e.stopPropagation(); } }, true));
+document.addEventListener("click", e => {
+  if (!PK.on || e.target.closest(".pickui")) return;
+  e.preventDefault(); e.stopPropagation();
+  const h = advHit(e.target); advPickStop(); if (h) advReveal(h.el.id);
+}, true);
+document.addEventListener("keydown", e => { if (e.key === "Escape" && PK.on) advPickStop(); }, true);
+try { const css = localStorage.getItem("espdevice-advcss"); if (css) { const st = document.createElement("style"); st.id = "advStyle"; st.textContent = css; document.head.appendChild(st); } } catch (e) {}   // instant repaint, like the colours
 )HTMLX";
 
 static const char* HTML_JS2 = R"HTMLX(
@@ -3301,7 +3595,7 @@ setInterval(paintCounters, 100);
 
 (function init() {
   wmInit().catch(() => { const d = $("desk"); if (d) d.classList.add("ready"); }); // windows (see the WINDOWS section)
-  loadTheme();
+  loadTheme().then(advLoad);
   loadArt();
   const dl = $("keynames");
   KEY_NAMES.forEach(n => { const o = document.createElement("option"); o.value = n; dl.appendChild(o); });
@@ -3327,6 +3621,8 @@ static std::string WebsiteHtml() {
     s += HTML_JS_WM2;
     s += HTML_JS_WM3;
     s += HTML_JS_STATS;
+    s += HTML_JS_ADV;
+    s += HTML_JS_ADV2;
     s += HTML_JS2;
     const std::string marker = "@@VER@@", ver = ESP_VERSION;
     for (size_t p = s.find(marker); p != std::string::npos; p = s.find(marker, p + ver.size())) s.replace(p, marker.size(), ver);

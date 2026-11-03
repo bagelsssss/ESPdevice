@@ -99,6 +99,7 @@ You still need to build and flash the keypad itself, see [Make your own keypad](
 
 **Themes and look**
 - Themes: Light (default), Dark, Terminal and Bagel, plus your own. COPY a theme and edit about 36 individual colors with live preview; saved to `config\theme.json`.
+- **Advanced theming** (SETTINGS > THEMING > advanced theming, off by default): adds an ADVANCED section under the colour editor in THEMES. Edit almost anything in the page per element: text colour, background, border / line colour and thickness, font, size, and more, grouped as PAGE, HEADER, TOP-RIGHT BUTTONS, WINDOWS, MENUS, BUTTONS AND INPUTS, PROFILE, VISUALIZER, KEYBINDS, DEBUGGER and CLICK STATS. **PICK AN ELEMENT** lets you hover the page and click the thing you want to change; its row opens. Each value has an x to reset it. Edits belong to the theme they were made in; built-in themes are read-only, so COPY one first. Switching advanced theming off shows the plain theme again and keeps your edits. Edits are saved in their own file, `config\theme_advanced.json`, so older builds ignore it and `theme.json` stays compatible.
 - The default logo is recolored automatically to match the active theme (custom themes too).
 - Click the logo to use your own PNG (max 1 MB, 1024x1024 px; square recommended). Or drop a PNG at `config\default_logo.png` to change the built-in default. `[reset]` goes back to default.
 - Optional plain-text title art in `config\art.txt`, shown only when there is no logo image.
@@ -225,7 +226,7 @@ Open http://localhost:9191 (or tray icon > Open Settings).
 | **VISUALIZER** | Shows the keys (3, or 8 in 8-key mode) lighting up live, with their current bindings, plus the CPS and Total counters. |
 | **KEYBINDS** | Edit each key's binding: type + ENTER, or CAPTURE. |
 | **DEBUGGER** | Pull-down button under SETTINGS: link status, reports per second, latency stats, live event log. |
-| **THEMES** | Pull-down from the `[ THEMES ]` button at the top right. Switch, copy, rename, delete and edit color themes. |
+| **THEMES** | Pull-down from the `[ THEMES ]` button at the top right. Switch, copy, rename, delete and edit color themes (plus the ADVANCED section when enabled). |
 
 ## Troubleshooting
 
