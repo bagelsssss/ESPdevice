@@ -103,6 +103,11 @@ static void InitPaths() {
     g_activeIndexPath = g_configDir / L"active_profile.txt";
 }
 
+// 3-key mode keeps the original files (profiles.json / active_profile.txt, unchanged format);
+// 8-key mode has its own pair so the two lists never mix.
+static fs::path ProfilesPath() { return g_activeKeys.load() >= 8 ? g_configDir / L"profiles8.json" : g_profilesPath; }
+static fs::path ActiveIdxPath() { return g_activeKeys.load() >= 8 ? g_configDir / L"active_profile8.txt" : g_activeIndexPath; }
+
 static std::mutex g_logMutex;
 
 static std::string TimestampNow() {
@@ -339,9 +344,9 @@ static void SendRepeat(const CompiledBinding& b) {
 struct Profile {
     std::string name;
     std::string bindings[NUM_KEYS];
+    bool isTest = false;   // the built-in "test" profile: never saved, no bindings, cannot be renamed or removed
 };
 
-static std::mutex g_profileMutex;
 static std::vector<Profile> g_profiles;
 static int g_activeIndex = 0;
 
@@ -412,18 +417,24 @@ static int JsonGetInt(const std::string& json, const std::string& key) {
     catch (...) { return -1; }
 }
 
-static std::string ProfilesToJson() {
+static int RealCount() { int n = 0; for (const auto& p : g_profiles) if (!p.isTest) n++; return n; }
+static int g_lastReal = 0;   // last selected non-test profile (what gets remembered on disk)
+
+static std::string ProfilesToJson(bool forDisk = false) {
     std::ostringstream out;
     out << "[";
+    bool first = true;
     for (size_t i = 0; i < g_profiles.size(); i++) {
         const Profile& p = g_profiles[i];
+        if (p.isTest && forDisk) continue;          // the test profile is never written to disk
+        if (!first) out << ",";
+        first = false;
         out << "{\"name\":\"" << JsonEscape(p.name) << "\",\"bindings\":[";
         for (int k = 0; k < NUM_KEYS; k++) {
             out << "\"" << JsonEscape(p.bindings[k]) << "\"";
             if (k < NUM_KEYS - 1) out << ",";
         }
-        out << "]}";
-        if (i + 1 < g_profiles.size()) out << ",";
+        out << "]" << (p.isTest ? ",\"test\":true" : "") << "}";
     }
     out << "]";
     return out.str();
@@ -460,9 +471,19 @@ static void SaveCounters(bool force) {
     g_clicksSaved = t;
 }
 // 8-key mode lives in the page settings (config\settings.json, "eightKeys":true); the app reads the flag here
+static void LoadProfilesLocked();
+static void PublishBindingsLocked();
+static std::mutex g_profileMutex;
+static std::atomic<bool> g_profilesLoaded{ false };
 static void ApplyKeyMode(const std::string& settingsJson) {
     int n = settingsJson.find("\"eightKeys\":true") != std::string::npos ? 8 : 3;
-    if (g_activeKeys.exchange(n) != n) g_keysChanged = true;
+    if (g_activeKeys.exchange(n) != n) {
+        g_keysChanged = true;
+        if (g_profilesLoaded) {                       // each mode has its own profile list: switch lists
+            try { std::lock_guard<std::mutex> lk(g_profileMutex); LoadProfilesLocked(); PublishBindingsLocked(); }
+            catch (...) {}
+        }
+    }
 }
 static void LoadKeyMode() {
     std::ifstream f(g_configDir / L"settings.json", std::ios::binary);
@@ -501,8 +522,8 @@ static void CounterSaverLoop() { // writes the file a few seconds after the numb
 }
 
 static void SaveProfilesLocked() {
-    WriteFileAtomic(g_profilesPath, ProfilesToJson());
-    WriteFileAtomic(g_activeIndexPath, std::to_string(g_activeIndex));
+    WriteFileAtomic(ProfilesPath(), ProfilesToJson(true));
+    WriteFileAtomic(ActiveIdxPath(), std::to_string(g_lastReal));
 }
 
 // Parses exactly what SaveProfilesLocked writes (names are sanitized so
@@ -511,7 +532,18 @@ static void SaveProfilesLocked() {
 static void LoadProfilesLocked() {
     g_profiles.clear();
 
-    std::ifstream file(g_profilesPath);
+    std::error_code fec;
+    // one-time safety copy of the pre-1.2 profile file (3-key list stays in the same format)
+    {
+        fs::path bak = g_configDir / L"profiles.pre-1.2.bak";
+        if (fs::exists(g_profilesPath, fec) && !fs::exists(bak, fec)) fs::copy_file(g_profilesPath, bak, fec);
+    }
+    // first time in 8-key mode: start from a copy of the 3-key list (keys 4-8 keep their F G H J K bindings)
+    fs::path src = ProfilesPath();
+    bool seeded = false;
+    if (g_activeKeys.load() >= 8 && !fs::exists(src, fec)) { src = g_profilesPath; seeded = true; }
+
+    std::ifstream file(src);
     if (file.is_open()) {
         std::ostringstream ss;
         ss << file.rdbuf();
@@ -556,11 +588,18 @@ static void LoadProfilesLocked() {
     if (g_profiles.empty()) g_profiles.push_back(DefaultProfile("Profile 1"));
 
     g_activeIndex = 0;
-    std::ifstream idxFile(g_activeIndexPath);
+    std::ifstream idxFile(seeded ? g_activeIndexPath : ActiveIdxPath());
     if (idxFile.is_open()) {
         int idx;
         if (idxFile >> idx && idx >= 0 && idx < (int)g_profiles.size()) g_activeIndex = idx;
     }
+    g_lastReal = g_activeIndex;
+
+    Profile t;                                   // the built-in test profile: always last, never saved
+    t.name = "test"; t.isTest = true;
+    g_profiles.push_back(t);                     // bindings stay empty = sends nothing
+
+    if (seeded) { WriteFileAtomic(ProfilesPath(), ProfilesToJson(true)); WriteFileAtomic(ActiveIdxPath(), std::to_string(g_lastReal)); }
 }
 
 // ---- Published bindings (what the key path reads) ---------------------
@@ -706,12 +745,24 @@ static void ReleaseAllKeys() {
     for (int i = 0; i < NUM_KEYS; i++) if (g_held[i] || g_sent[i]) ReleaseKey(i);
 }
 
+static bool g_extNoted[NUM_KEYS];   // debugger-log notes about extension keys (device thread only; reset on connect / mode change)
+
 static void HandleByte(BYTE b, double now, int64_t tRecv) {
-    if (b < 1 || b > g_activeKeys.load() * 2) return; // identity replies / keys that are not enabled / anything else
+    if (b < 1 || b > g_activeKeys.load() * 2) {   // identity replies / keys that are not enabled / anything else
+        if (b >= 1 && b <= NUM_KEYS * 2 && !g_extNoted[(b - 1) / 2]) {   // say so once, so "my extension does nothing" can be diagnosed in the DEBUGGER
+            g_extNoted[(b - 1) / 2] = true;
+            PushEvent(EVT_INFO, (b - 1) / 2, 0, "key signal received but ignored: 8-key support is off in SETTINGS");
+        }
+        return;
+    }
     int idx = (b - 1) / 2;
     bool isPress = (b & 1) != 0;
 
     g_lastSeen[idx] = now;
+    if (idx >= 3 && !g_extNoted[idx]) {   // first sign of life from each extension key
+        g_extNoted[idx] = true;
+        PushEvent(EVT_INFO, idx, 0, "extension key is sending signals");
+    }
 
     if (isPress) {
         if (g_held[idx]) return; // keepalive while held
@@ -750,7 +801,11 @@ static void HandleByte(BYTE b, double now, int64_t tRecv) {
 // Runs on every wake of the device thread: stale-key timeout, pause /
 // shutdown release, typematic repeat.
 static void ServiceTick(double now) {
-    if (g_keysChanged.exchange(false)) ReleaseAllKeys();   // 3-key / 8-key mode was switched: let go of everything
+    if (g_keysChanged.exchange(false)) {   // 3-key / 8-key mode was switched: let go of everything
+        ReleaseAllKeys();
+        for (int i = 0; i < NUM_KEYS; i++) g_extNoted[i] = false;
+        PushEvent(EVT_INFO, -1, 0, g_activeKeys.load() >= 8 ? "8-key mode on" : "8-key mode off");
+    }
     bool blocked = g_paused.load() || !g_running.load();
     for (int idx = 0; idx < NUM_KEYS; idx++) {
         if (!g_held[idx]) continue;
@@ -1267,6 +1322,7 @@ static void HandleRequest(SOCKET client) {
         std::lock_guard<std::mutex> lock(g_profileMutex);
         if (idx >= 0 && idx < (int)g_profiles.size()) {
             g_activeIndex = idx;
+            if (!g_profiles[idx].isTest) g_lastReal = idx;
             PublishBindingsLocked();
             SaveProfilesLocked();
         }
@@ -1280,6 +1336,8 @@ static void HandleRequest(SOCKET client) {
         std::lock_guard<std::mutex> lock(g_profileMutex);
         if (idx < 0 || idx >= (int)g_profiles.size() || key < 0 || key >= NUM_KEYS) {
             err = "bad profile or key index";
+        } else if (g_profiles[idx].isTest) {
+            err = "the test profile has no bindings";
         } else {
             CompiledBinding cb;
             if (CompileBinding(value, cb, err)) {
@@ -1295,9 +1353,9 @@ static void HandleRequest(SOCKET client) {
         std::string err;
         std::lock_guard<std::mutex> lock(g_profileMutex);
         if (name.empty()) err = "name needs letters or numbers";
-        else if ((int)g_profiles.size() >= MAX_PROFILES) err = "profile limit reached";
+        else if (RealCount() >= MAX_PROFILES) err = "profile limit reached";
         else {
-            g_profiles.push_back(DefaultProfile(name));
+            g_profiles.insert(g_profiles.end() - 1, DefaultProfile(name));   // always before the test profile
             SaveProfilesLocked();
         }
         response = HttpResponse("200 OK", "application/json", BuildStateJsonLocked(err));
@@ -1309,6 +1367,7 @@ static void HandleRequest(SOCKET client) {
         std::lock_guard<std::mutex> lock(g_profileMutex);
         if (name.empty()) err = "name needs letters or numbers";
         else if (idx < 0 || idx >= (int)g_profiles.size()) err = "bad profile index";
+        else if (g_profiles[idx].isTest) err = "the test profile cannot be renamed";
         else { g_profiles[idx].name = name; SaveProfilesLocked(); }
         response = HttpResponse("200 OK", "application/json", BuildStateJsonLocked(err));
     }
@@ -1316,12 +1375,17 @@ static void HandleRequest(SOCKET client) {
         int idx = JsonGetInt(body, "index");
         std::string err;
         std::lock_guard<std::mutex> lock(g_profileMutex);
-        if (g_profiles.size() <= 1) err = "cannot delete the last profile";
+        if (idx >= 0 && idx < (int)g_profiles.size() && g_profiles[idx].isTest) err = "the test profile cannot be removed";
+        else if (RealCount() <= 1) err = "cannot delete the last profile";
         else if (idx < 0 || idx >= (int)g_profiles.size()) err = "bad profile index";
         else {
+            bool wasActive = (g_activeIndex == idx);
             g_profiles.erase(g_profiles.begin() + idx);
-            if (g_activeIndex >= (int)g_profiles.size()) g_activeIndex = (int)g_profiles.size() - 1;
-            else if (g_activeIndex > idx) g_activeIndex--;
+            if (g_activeIndex > idx) g_activeIndex--;
+            else if (wasActive) g_activeIndex = std::min(idx, RealCount() - 1);
+            if (g_lastReal > idx) g_lastReal--;
+            if (wasActive) g_lastReal = g_activeIndex;
+            if (g_lastReal >= RealCount()) g_lastReal = RealCount() - 1;
             PublishBindingsLocked();
             SaveProfilesLocked();
         }
@@ -1523,6 +1587,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
         std::lock_guard<std::mutex> lock(g_profileMutex);
         LoadProfilesLocked();
         PublishBindingsLocked();
+        g_profilesLoaded = true;
     } catch (...) {
         Log("ERROR: profiles unreadable - using default profile.");
         std::lock_guard<std::mutex> lock(g_profileMutex);
@@ -1708,13 +1773,18 @@ html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg);
 .mimg { object-fit: contain; }
 .mcar { position: absolute; left: 3px; top: 3px; width: 18px; height: 18px; min-width: 0; padding: 0; font-size: 12px; line-height: 1; display: flex; align-items: center; justify-content: center; z-index: 3; }
 /* corner widgets */
-.tbtns { position: fixed; right: 16px; top: 16px; z-index: 3; display: flex; gap: 8px; }
+.tbtns { position: fixed; right: 16px; top: 16px; z-index: 3; display: grid; grid-template-columns: auto auto; gap: 8px; justify-items: end; }
+.tbt { grid-column: 1; grid-row: 1; } .tbs { grid-column: 2; grid-row: 1; } .tbd { grid-column: 2; grid-row: 2; }
 .tbtns.open { z-index: 100 !important; }   /* an open pull-down is always above the windows */
 .tb { position: relative; }
 .gear.on { border-color: var(--c-border); position: relative; z-index: 2; }
 /* pull-down menus: hang from their button (the button is the tab at the top-right corner of the panel) */
 .menu { position: absolute; right: 0; top: 100%; margin-top: -1px; display: none; background: var(--c-bg); border: 1px solid var(--c-border); padding: 6px 14px 14px 14px; overflow: auto; width: 360px; max-width: calc(100vw - 32px); max-height: calc(100vh - 116px); transform-origin: 100% 0; scrollbar-width: thin; scrollbar-color: var(--c-border) var(--c-bg); }
 #menu-theme { width: 480px; }
+#menu-debugger { width: 560px; max-height: calc(100vh - 170px); }
+#menu-debugger #log { height: min(300px, calc(100vh - 420px)); min-height: 90px; }
+button:disabled { opacity: 0.45; cursor: default; }
+button:disabled:hover { background: var(--c-btn-bg); color: var(--c-btn-fg); }
 .err:empty { display: none; }
 .keys.k8 { gap: 8px; }
 .keys.k8 .key { width: 56px; height: 56px; }
@@ -1730,8 +1800,10 @@ html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg);
 /* closing: shrink and fade out */
 .menu.closing { animation: mclose 0.4s steps(12, end) both; }
 @keyframes mclose { from { transform: none; opacity: 1; } to { transform: scale(0.82); opacity: 0; } }
+.menu.opening.oldanim { animation: mzoom 0.4s steps(12, end) both; }   /* SETTINGS > old animations: zoom and fade */
+@keyframes mzoom { from { transform: scale(0.82); opacity: 0; } to { transform: none; opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .menu.opening, .menu.closing { animation: none; } }
-html.noanim .menu.opening, html.noanim .menu.closing, html.noanim .counters span.pop { animation: none !important; }   /* SETTINGS > disable animations */
+html.noanim .menu.opening, html.noanim .menu.closing, html.noanim .crow span.pop { animation: none !important; }   /* SETTINGS > disable animations */
 .gear img { display: block; width: 24px; height: 24px; object-fit: contain; pointer-events: none; }
 .gear.hasicon { padding: 3px; background: transparent; border-color: transparent; }
 .gear.hasicon:hover { background: var(--c-btn-hover-bg); border-color: var(--c-btn-border); }
@@ -1743,18 +1815,20 @@ html.noanim .menu.opening, html.noanim .menu.closing, html.noanim .counters span
 .br { position: fixed; right: 16px; bottom: 12px; z-index: 1; text-align: right; }
 .credit { opacity: 0.5; color: var(--c-credit); }
 /* per-window tweaks */
-.vis { display: flex; flex-wrap: wrap; gap: 12px 32px; align-items: center; }
-.counters { display: grid; gap: 8px; min-width: 150px; font-size: 1.35em; color: var(--c-stat-label); }
-.counters div { white-space: nowrap; justify-self: start; }
-.counters span { display: inline-block; color: var(--c-stat-value); font-size: 1.2em; transform-origin: 50% 65%; }
-.counters span.pop { animation: cpop 0.3s steps(9, end); }   /* only the number pops: size only, never see-through (30 fps) */
+.vis { display: flex; flex-direction: column; align-items: center; gap: 12px; min-width: 300px; }
+.vis .keys { justify-content: center; }
+.crow { align-self: stretch; display: flex; align-items: center; gap: 16px; white-space: nowrap; color: var(--c-stat-label); line-height: 1.5; min-height: 1.8em; }
+.crow span { display: inline-block; color: var(--c-stat-value); transform-origin: 50% 65%; }
+#cCpsRow { font-size: 1.2em; } #cCps { font-size: 1.2em; }
+#cTotalRow { margin-left: auto; font-size: 0.95em; text-align: right; }
+#cTotal.d5 { font-size: 0.88em; } #cTotal.d6 { font-size: 0.76em; } #cTotal.dm { font-size: 0.7em; }
+.crow span.pop { animation: cpop 0.3s steps(9, end); }   /* only the CPS number pops: size only, never see-through (30 fps) */
 @keyframes cpop { from { transform: scale(1.45); } to { transform: scale(1); } }
-.counters span.cps1 { color: #e8890c; } .counters span.cps2 { color: #e02020; } .counters span.cps3 { color: #9b30ff; }
-#w-debugger .wbody { display: flex; flex-direction: column; }
-#w-debugger .wbody > * { flex: none; }
-#w-debugger #log { flex: 1 1 90px; height: auto; min-height: 70px; }
+.crow span.cps1 { color: #e8890c; } .crow span.cps2 { color: #e02020; } .crow span.cps3 { color: #9b30ff; }
 .opt { display: flex; align-items: center; gap: 8px; margin: 5px 0; cursor: pointer; user-select: none; }
 .opt input { width: 14px; height: 14px; margin: 0; accent-color: var(--c-fg); }
+/* small / square browser window: the social links hide, and [8-key Mode Active] takes their place at the bottom left */
+@media (max-width: 780px) { .credit { display: none; } .socials { display: none; } .mode8 { left: 16px; transform: none; } }
 .setgrp { margin: 12px 0 4px 0; color: var(--c-heading); } .setgrp:first-child { margin-top: 2px; }
 </style>
 </head>
@@ -1781,7 +1855,7 @@ static const char* HTML_BODY = R"HTMLX(<body>
 </div>
 </div>
 <div class="tbtns" id="tbtns">
-<div class="tb"><button class="gear" id="themeBtn" onclick="menuToggle('theme')" title="Themes">[ THEMES ]</button>
+<div class="tb tbt"><button class="gear" id="themeBtn" onclick="menuToggle('theme')" title="Themes">[ THEMES ]</button>
 <div class="menu" id="menu-theme">
 <div class="row">
   <select id="themeSelect" onchange="pickTheme()"></select>
@@ -1796,7 +1870,7 @@ static const char* HTML_BODY = R"HTMLX(<body>
 </div>
 <div id="themeFields"></div>
 </div></div>
-<div class="tb"><button class="gear" id="gearBtn" onclick="menuToggle('settings')" title="Settings">[ SETTINGS ]</button>
+<div class="tb tbs"><button class="gear" id="gearBtn" onclick="menuToggle('settings')" title="Settings">[ SETTINGS ]</button>
 <div class="menu" id="menu-settings">
 <div class="setgrp">WINDOWS</div>
 <div class="row"><button onclick="resetLayout()">RESET WINDOW LAYOUT</button></div>
@@ -1810,6 +1884,9 @@ static const char* HTML_BODY = R"HTMLX(<body>
 <label class="opt"><input type="checkbox" id="optCpsColor" onchange="wmSettingChanged()"> colored cps</label>
 <div class="setgrp">ANIMATIONS</div>
 <label class="opt"><input type="checkbox" id="optAnimOff" onchange="wmSettingChanged()"> disable animations</label>
+<label class="opt"><input type="checkbox" id="optOldAnim" onchange="wmSettingChanged()"> old animations</label>
+<div class="setgrp">SERVICE</div>
+<div class="row"><button id="pauseBtn" onclick="toggleService()">PAUSE</button><button onclick="terminateService()">TERMINATE</button></div>
 <div class="setgrp">SOCIAL LINKS (bottom left)</div>
 <label class="opt"><input type="checkbox" id="optSocial_github" onchange="wmSettingChanged()"> GitHub</label>
 <label class="opt"><input type="checkbox" id="optSocial_youtube" onchange="wmSettingChanged()"> YouTube</label>
@@ -1817,48 +1894,8 @@ static const char* HTML_BODY = R"HTMLX(<body>
 <label class="opt"><input type="checkbox" id="optSocial_discord" onchange="wmSettingChanged()"> Discord</label>
 <p class="dim">More options will show up here in future versions. Saved in config\settings.json.</p>
 </div></div>
-</div>
-
-<div id="desk">
-
-<section class="win" id="w-profile" data-title="PROFILE" data-abbr="PRO"><div class="wbody">
-<div class="row">
-  <select id="profileSelect" onchange="selectProfile()"></select>
-  <button onclick="addProfile()">+ ADD</button>
-  <button onclick="renameProfile()">RENAME</button>
-  <button onclick="deleteProfile()">DELETE</button>
-</div>
-<p class="dim" id="profileCount"></p>
-</div></section>
-
-<section class="win" id="w-visualizer" data-title="VISUALIZER" data-abbr="VIS"><div class="wbody">
-<div class="vis">
-  <div class="keys" id="keys"></div>
-  <div class="counters">
-    <div id="cCpsRow">CPS: <span id="cCps">0</span></div>
-    <div id="cTotalRow">Total: <span id="cTotal">0</span></div>
-  </div>
-</div>
-</div></section>
-
-<section class="win" id="w-keybinds" data-title="KEYBINDS" data-abbr="KEY"><div class="wbody">
-<table>
-  <thead><tr><th>KEY</th><th>BINDING (type, then press ENTER to save)</th><th></th></tr></thead>
-  <tbody id="bindRows"></tbody>
-</table>
-<datalist id="keynames"></datalist>
-<p class="err" id="err"></p>
-<p class="dim">Type a binding and press ENTER to save it (e.g. A, ?, CTRL+SHIFT+A, F13). Or click CAPTURE and press any key (hold CTRL/SHIFT/ALT first for a combo), or type names (SPACE, F13, NUM5, VOL_UP...) or characters (? &lt; &gt; { } | : " ~ ! @ ...). Typed shifted characters are stored as SHIFT+key. Use PLUS for the + key. Combos join with +, up to 4 keys.</p>
-</div></section>
-
-<section class="win" id="w-service" data-title="SERVICE" data-abbr="SVC"><div class="wbody">
-<div class="row">
-  <button id="pauseBtn" onclick="toggleService()">PAUSE</button>
-  <button onclick="terminateService()">TERMINATE</button>
-</div>
-</div></section>
-
-<section class="win" id="w-debugger" data-title="DEBUGGER" data-abbr="DBG"><div class="wbody">
+<div class="tb tbd"><button class="gear" id="dbgBtn" onclick="menuToggle('debugger')" title="Debugger">[ DEBUGGER ]</button>
+<div class="menu" id="menu-debugger">
 <div class="stats">
   <div>link: <span id="sLink">-</span></div>
   <div>reports/s: <span id="sRate">-</span></div>
@@ -1876,7 +1913,41 @@ static const char* HTML_BODY = R"HTMLX(<body>
 </div>
 <div id="log"></div>
 <p class="dim">latency = keypad byte received by the service until SendInput returned (excludes USB transit time).</p>
+</div></div>
+</div>
+
+<div id="desk">
+
+<section class="win" id="w-profile" data-title="PROFILE" data-abbr="PRO"><div class="wbody">
+<div class="row">
+  <select id="profileSelect" onchange="selectProfile()"></select>
+  <button onclick="addProfile()">+ ADD</button>
+  <button id="btnRen" onclick="renameProfile()">RENAME</button>
+  <button id="btnDel" onclick="deleteProfile()">DELETE</button>
+</div>
+<p class="dim" id="profileCount"></p>
 </div></section>
+
+<section class="win" id="w-visualizer" data-title="VISUALIZER" data-abbr="VIS"><div class="wbody">
+<div class="vis">
+  <div class="keys" id="keys"></div>
+  <div class="crow">
+    <div id="cCpsRow">CPS: <span id="cCps">0</span></div>
+    <div id="cTotalRow">Total: <span id="cTotal">0</span></div>
+  </div>
+</div>
+</div></section>
+
+<section class="win" id="w-keybinds" data-title="KEYBINDS" data-abbr="KEY"><div class="wbody">
+<table>
+  <thead><tr><th>KEY</th><th>BINDING (type, then press ENTER to save)</th><th></th></tr></thead>
+  <tbody id="bindRows"></tbody>
+</table>
+<datalist id="keynames"></datalist>
+<p class="err" id="err"></p>
+<p class="dim">Type a binding and press ENTER to save it (e.g. A, ?, CTRL+SHIFT+A, F13). Or click CAPTURE and press any key (hold CTRL/SHIFT/ALT first for a combo), or type names (SPACE, F13, NUM5, VOL_UP...) or characters (? &lt; &gt; { } | : " ~ ! @ ...). Typed shifted characters are stored as SHIFT+key. Use PLUS for the + key. Combos join with +, up to 4 keys.</p>
+</div></section>
+
 
 
 </div>
@@ -1954,13 +2025,15 @@ function renderProfiles() {
   sel.innerHTML = "";
   S.profiles.forEach((p, i) => {
     const o = document.createElement("option");
-    o.value = String(i); o.textContent = p.name;
+    o.value = String(i); o.textContent = p.test ? "test" : p.name;
     sel.appendChild(o);
   });
   sel.value = String(S.activeIndex);
-  $("profileCount").textContent = S.profiles.length + " / " + S.maxProfiles + " profiles";
+  const real = S.profiles.filter(p => !p.test).length;
+  $("profileCount").textContent = real + " / " + S.maxProfiles + " profiles (+ test)";
 
-  const active = S.profiles[S.activeIndex];
+  const active = S.profiles[S.activeIndex], isTest = !!active.test;
+  $("btnRen").disabled = isTest; $("btnDel").disabled = isTest;
   const rows = $("bindRows");
   rows.innerHTML = "";
   for (let k = 0; k < keyCount(); k++) {
@@ -1968,17 +2041,18 @@ function renderProfiles() {
     const td0 = document.createElement("td"); td0.textContent = "KEY " + (k + 1);
     const td1 = document.createElement("td");
     const inp = document.createElement("input"); inp.type = "text";
-    inp.id = "in" + k; inp.value = active.bindings[k]; inp.setAttribute("list", "keynames");
+    inp.id = "in" + k; inp.value = isTest ? "" : active.bindings[k]; inp.setAttribute("list", "keynames");
+    if (isTest) { inp.disabled = true; inp.placeholder = "nothing (test profile)"; }
     inp.setAttribute("spellcheck", "false"); inp.setAttribute("autocomplete", "off");
     inp.addEventListener("keydown", e => { if (e.key === "Enter") saveKey(k); });
     td1.appendChild(inp);
     const td2 = document.createElement("td");
     const cap = document.createElement("button"); cap.className = "cap"; cap.id = "cap" + k; cap.textContent = "CAPTURE";
-    cap.onclick = () => startCapture(k);
+    cap.onclick = () => startCapture(k); cap.disabled = isTest;
     td2.appendChild(cap);
     tr.appendChild(td0); tr.appendChild(td1); tr.appendChild(td2);
     rows.appendChild(tr);
-    $("keyb" + k).textContent = active.bindings[k];
+    $("keyb" + k).textContent = isTest ? "-" : active.bindings[k];
   }
 }
 
@@ -2171,8 +2245,8 @@ static const char* HTML_JS_WM1 = R"HTMLX(
 // Every section is a floating window: drag it by the title bar (freeform, nothing snaps), resize from either bottom corner,
 // minimize with "v" (it becomes a small icon window; "^" opens it again).
 // Positions, sizes, minimized state and stacking order are saved to config\layout.json.
-const WIN_IDS = ["profile", "visualizer", "keybinds", "service", "debugger"];
-const WIN_ICON = { profile: "Profile", visualizer: "Visualizer", keybinds: "Keybinds", service: "Service", debugger: "Debugger" }; // config\icons\<Name>_icon.png
+const WIN_IDS = ["profile", "visualizer", "keybinds"];   // SERVICE moved into SETTINGS, DEBUGGER is a pull-down now
+const WIN_ICON = { profile: "Profile", visualizer: "Visualizer", keybinds: "Keybinds" }; // config\icons\<Name>_icon.png
 const WORK_BOTTOM = 64;   // the bottom strip (links, status) under the divider line; default windows stay above it
 const MIN_W = 200, MIN_H = 56, MINI_MIN = 36, MINI_W = 88, MINI_H = 64;
 const SOCIALS = [
@@ -2220,10 +2294,11 @@ function wmNaturalW(id) {   // the width a window needs for its content, with no
 // 3 <-> 8 keys changes how tall VISUALIZER and KEYBINDS need to be: refit them and move the windows below them along
 function wmRefitKeys() {
   const L = WM.L; if (!L) return;
+  if (L.auto) { wmRelayoutAuto(); wmPlaceAll(); wmSave(); return; }
   const vw = wmVW(), vh = wmVH();
   ["visualizer", "keybinds"].forEach(id => {
     const W = L.win[id], r = wmResolve(W.n, MIN_W, MIN_H);
-    const w = (id === "visualizer" && keyCount() === 8) ? Math.max(r.w, Math.min(580, vw - r.x - 16)) : r.w;
+    const w = (id === "visualizer" && keyCount() === 8) ? Math.max(r.w, Math.min(wmNaturalW(id), vw - r.x - 16)) : r.w;
     const nat = wmNatural(id, w);
     const below = W.min ? [] : WIN_IDS.filter(o => {   // windows under this one (same columns): they follow
       if (o === id || L.win[o].min) return false;
@@ -2239,6 +2314,19 @@ function wmRefitKeys() {
   });
   wmPlaceAll(); wmSave();
 }
+// the browser window changed size (small, square, fullscreen): an untouched layout is rebuilt for the new size,
+// an arranged one keeps its saved frames and is only kept inside the window (see wmResolve)
+function wmRelayoutAuto() {
+  const D = wmDefaults();
+  WIN_IDS.forEach(id => { const W = WM.L.win[id], d = D.win[id]; W.n = d.n; if (!W.min) { W.m.x = d.m.x; W.m.y = d.m.y; } });
+}
+let wmRzT = 0;
+function wmOnResize() {
+  if (!WM.L) return;
+  wmPlaceAll();                                   // immediately: nothing leaves the window
+  clearTimeout(wmRzT);
+  wmRzT = setTimeout(() => { if (WM.L && WM.L.auto) { wmRelayoutAuto(); wmPlaceAll(); wmSave(); } }, 120);
+}
 function wmFitFresh() {   // first run (nothing saved yet): once the keybind rows exist, cut every window to its content
   if (!WM.fresh || WM.fitted || !WM.L) return;
   WM.fitted = true; WM.L = wmClean(null); wmPlaceAll();
@@ -2249,21 +2337,24 @@ function wmDefaults() {
   const hb = document.querySelector(".hdr").getBoundingClientRect();
   // the same arrangement as 1.0: a page of at most 1200 px in the middle, two equal columns under the header
   const page = Math.min(1200, vw), colW = Math.max(MIN_W, Math.floor((page - 48) / 2)), x0 = Math.max(16, Math.floor((vw - page) / 2) + 16);
-  const y0 = Math.max(Math.ceil(hb.bottom), 150) + 8;
-  const cols = [
-    { x: x0, y: y0, ids: ["profile", "visualizer", "keybinds", "service"] },
-    { x: Math.max(16, Math.min(x0 + colW + 16, vw - colW - 16)), y: y0, ids: ["debugger"] }
+  const y0 = ((vw < 780 || vh < 760) ? Math.ceil(hb.bottom) : Math.max(Math.ceil(hb.bottom), 150)) + 8;   // small browser window: start right under the header
+  const narrow = vw < 780;   // square or small browser window: everything in one column
+  const colW1 = narrow ? Math.max(MIN_W, Math.min(vw - 32, 620)) : colW;
+  const cols = narrow ? [{ x: Math.max(16, Math.floor((vw - colW1) / 2)), y: y0, ids: ["profile", "visualizer", "keybinds"] }] : [
+    { x: x0, y: y0, ids: ["profile", "visualizer"] },
+    { x: Math.max(16, Math.min(x0 + colW + 16, vw - colW - 16)), y: y0, ids: ["keybinds"] }
   ];
   // new rule: windows are cut to their content, so there is no empty space (the debugger log gets some room)
   // width = what the content needs (up to the column); KEYBINDS and DEBUGGER always get the full column
   const W = {}, H = {};
   WIN_IDS.forEach(id => {
-    const nw = (id === "keybinds" || id === "debugger") ? colW : Math.min(colW, Math.max(MIN_W, wmNaturalW(id)));
-    W[id] = nw > 0 ? nw : colW;
-    const nat = wmNatural(id, W[id]); H[id] = nat > 0 ? nat : 120;
+    const nw = (id === "keybinds") ? colW1 : Math.min(colW1, Math.max(MIN_W, wmNaturalW(id)));
+    W[id] = nw > 0 ? nw : colW1;
   });
-  H.debugger = Math.max(H.debugger + 260, 380);
-  const L = { v: 1, order: WIN_IDS.slice(), win: {} };
+  const lw = Math.max(W.profile, W.visualizer);   // the two left windows share one width
+  W.profile = lw; W.visualizer = lw;
+  WIN_IDS.forEach(id => { const nat = wmNatural(id, W[id]); H[id] = nat > 0 ? nat : 120; });
+  const L = { v: 1, auto: true, order: WIN_IDS.slice(), win: {} };   // auto = untouched default layout: it follows the browser window size
   const mk = (x, y, w, h, open) => ({
     n: { x: x, y: y, w: w, h: h, z: null, pw: 0, ph: 0 },
     m: { x: x, y: y, w: MINI_W, h: MINI_H, z: null, pw: 0, ph: 0 },
@@ -2275,9 +2366,9 @@ function wmDefaults() {
     const gap = 12, n = c.ids.length, avail = vh - c.y - WORK_BOTTOM - 4 - gap * (n - 1);
     const hs = {}; c.ids.forEach(id => { hs[id] = H[id]; });
     let deficit = c.ids.reduce((t, id) => t + hs[id], 0) - avail;
-    ["keybinds", "debugger", "visualizer", "profile", "service"].forEach(id => {
+    ["keybinds"].forEach(id => {   // only KEYBINDS gives up height (it scrolls); PROFILE and VISUALIZER keep their content height
       if (deficit <= 0 || hs[id] === undefined) return;
-      const take = Math.min(Math.max(0, hs[id] - (id === "keybinds" ? 170 : MIN_H)), deficit);
+      const take = Math.min(Math.max(0, hs[id] - (vh < 760 ? 110 : 170)), deficit);
       hs[id] -= take; deficit -= take;
     });
     let y = c.y;
@@ -2291,8 +2382,14 @@ function wmDefaults() {
 }
 
 function wmClean(raw) {
-  const D = wmDefaults(), L = { v: 1, order: [], win: {} };
+  const D = wmDefaults(), L = { v: 1, auto: !raw, order: [], win: {} };
   const rw = (raw && typeof raw === "object" && raw.win && typeof raw.win === "object") ? raw.win : {};
+  // entries this version does not use (SERVICE / DEBUGGER windows of 1.1) are carried along untouched, so going back to an older build keeps them
+  if (raw && typeof raw === "object" && raw.win) {
+    const keep = (raw.keep && typeof raw.keep === "object") ? raw.keep : {};
+    Object.keys(rw).forEach(k => { if (WIN_IDS.indexOf(k) < 0 && rw[k] && typeof rw[k] === "object") keep[k] = rw[k]; });
+    if (Object.keys(keep).length) L.keep = keep;
+  }
   WIN_IDS.forEach(id => {
     const r = has(rw, id) && rw[id] && typeof rw[id] === "object" ? rw[id] : null;
     const d = D.win[id];
@@ -2311,10 +2408,11 @@ function wmClean(raw) {
 
 // ---- geometry: the stored frame -> the rectangle shown now ----
 function wmResolve(f, minW, minH) {
-  const w = Math.max(minW, f.w), h = Math.max(minH, f.h), vw = wmVW(), vh = wmVH();
+  const vw = wmVW(), vh = wmVH();
+  const w = Math.max(minW, Math.min(f.w, vw - 8)), h = Math.max(minH, Math.min(f.h, vh - 8));
   return {
-    x: Math.min(Math.max(f.x, 40 - w), vw - 40),   // the title bar always stays reachable
-    y: Math.min(Math.max(f.y, 0), vh - 30),
+    x: Math.min(Math.max(f.x, 40 - w), Math.max(0, vw - w)),   // never past the right edge (the left edge may be dragged partly out)
+    y: Math.min(Math.max(f.y, 0), Math.max(0, vh - h)),         // and never below the bottom of the browser window
     w: w, h: h
   };
 }
@@ -2327,10 +2425,8 @@ function wmPlace(id) {
   wmSetRect(mi, wmResolve(W.m, MINI_MIN, MINI_MIN));
   const z = String(10 + WM.L.order.indexOf(id));
   el.style.zIndex = z; mi.style.zIndex = z;
-  const wasHidden = el.style.display === "none";
   el.style.display = (W.open && !W.min) ? "flex" : "none";
   mi.style.display = (W.open && W.min) ? "block" : "none";
-  if (id === "debugger" && wasHidden && W.open && !W.min) { const lg = $("log"); lg.scrollTop = lg.scrollHeight; } // a hidden log forgets its scroll position
 }
 function wmMarkFront() {
   let top = null;
@@ -2381,14 +2477,14 @@ function wmBeginMove(ev, id, isMini) {
       moved = true;
       F.z = null; F.pw = 0; F.ph = 0;
     }
-    F.x = Math.min(Math.max(base.x + dx, 40 - base.w), wmVW() - 40);
-    F.y = Math.min(Math.max(base.y + dy, 0), wmVH() - 30);
+    F.x = Math.min(Math.max(base.x + dx, 40 - base.w), Math.max(0, wmVW() - base.w));
+    F.y = Math.min(Math.max(base.y + dy, 0), Math.max(0, wmVH() - base.h));
     F.w = base.w; F.h = base.h;
     wmPlace(id);
   };
   const end = () => {
     grab.removeEventListener("pointermove", move); grab.removeEventListener("pointerup", end); grab.removeEventListener("pointercancel", end);
-    if (moved) wmSave();
+    if (moved) { WM.L.auto = false; wmSave(); }
   };
   grab.addEventListener("pointermove", move); grab.addEventListener("pointerup", end); grab.addEventListener("pointercancel", end);
 }
@@ -2420,7 +2516,7 @@ function wmBeginResize(ev, id, isMini, side) {
   };
   const end = () => {
     grab.removeEventListener("pointermove", move); grab.removeEventListener("pointerup", end); grab.removeEventListener("pointercancel", end);
-    if (moved) wmSave();
+    if (moved) { WM.L.auto = false; wmSave(); }
   };
   grab.addEventListener("pointermove", move); grab.addEventListener("pointerup", end); grab.addEventListener("pointercancel", end);
 }
@@ -2446,14 +2542,27 @@ function wmFly(g, big, small, shrink, done) {
   setTimeout(fin, ANIM_MS + 150);
 }
 
-// ---- minimize / restore: the icon window and the window follow each other ----
+// "expand then roll out" (the default): a thin bar spreads out along x, then the window grows downward. 30 fps = 12 steps in 0.4 s.
+// Minimizing is the same thing backwards: it rolls up, then narrows away. SETTINGS > old animations brings back the zoom and fade.
+function wmRoll(el, closing, done, fill) {
+  const bar = "inset(0 50% calc(100% - 6px) 50%)", wide = "inset(0 0 calc(100% - 6px) 0)", full = "inset(0 0 0 0)";
+  const k = closing ? [{ clipPath: full, easing: "steps(7, end)" }, { clipPath: wide, offset: 0.6, easing: "steps(5, end)" }, { clipPath: bar }]
+                    : [{ clipPath: bar, easing: "steps(5, end)" }, { clipPath: wide, offset: 0.4, easing: "steps(7, end)" }, { clipPath: full }];
+  const fin = () => { if (done) { const d = done; done = null; d(); } };
+  try { el.animate(k, { duration: ANIM_MS, fill: fill }).onfinish = fin; } catch (e) { fin(); return; }
+  setTimeout(fin, ANIM_MS + 150);
+}
+function wmOld() { return !!(WM.set && WM.set.oldAnim); }
 function wmMinimize(id) {
   const W = WM.L.win[id], r = wmResolve(W.n, MIN_W, MIN_H);
   const ghost = wmAnimOK() ? wmGhost(id) : null;
   W.m.x = r.x; W.m.y = r.y;                       // the icon window appears where the window is
   W.min = true;
   wmPlaceAll(); wmSave();
-  if (ghost) wmFly(ghost, r, wmResolve(W.m, MINI_MIN, MINI_MIN), true);   // the window zooms and fades into its icon
+  if (!ghost) return;
+  if (wmOld()) { wmFly(ghost, r, wmResolve(W.m, MINI_MIN, MINI_MIN), true); return; }   // old: zooms and fades into its icon
+  const mi = WM.mini[id]; mi.style.visibility = "hidden";                                 // new: rolls up, narrows, then the icon appears
+  wmRoll(ghost, true, () => { ghost.remove(); mi.style.visibility = ""; }, "both");
 }
 function wmRestore(id) {
   const W = WM.L.win[id], mr = wmResolve(W.m, MINI_MIN, MINI_MIN), nr = wmResolve(W.n, MIN_W, MIN_H);
@@ -2465,21 +2574,26 @@ function wmRestore(id) {
   W.min = false;
   const o = WM.L.order; o.splice(o.indexOf(id), 1); o.push(id);
   wmPlaceAll(); wmSave();
-  if (wmAnimOK()) {                               // the window zooms and fades out of its icon
+  if (wmAnimOK() && !wmOld()) { wmRoll(WM.el[id], false, null, "backwards"); return; }   // expands, then rolls out
+  if (wmAnimOK()) {                               // old: the window zooms and fades out of its icon
     const el = WM.el[id], ghost = wmGhost(id);
     el.style.visibility = "hidden";
     wmFly(ghost, wmResolve(W.n, MIN_W, MIN_H), mr, false, () => { el.style.visibility = ""; });
   }
 }
 
+)HTMLX";
+
+static const char* HTML_JS_WM3 = R"HTMLX(
 // ---- pull-down menus (THEMES, SETTINGS) ----
-const MENU_BTN = { theme: "themeBtn", settings: "gearBtn" };
+const MENU_BTN = { theme: "themeBtn", settings: "gearBtn", debugger: "dbgBtn" };
 let menuCur = null;
 function menuSyncZ() { $("tbtns").classList.toggle("open", !!menuCur || Object.keys(MENU_BTN).some(i => $("menu-" + i).style.display === "block")); }
 function menuShow(id) {
   const m = $("menu-" + id); clearTimeout(m._t);
-  m.classList.remove("closing"); m.style.display = "block"; void m.offsetWidth; m.classList.add("opening");
+  m.classList.remove("closing"); m.style.display = "block"; m.classList.toggle("oldanim", wmOld()); void m.offsetWidth; m.classList.add("opening");
   $(MENU_BTN[id]).classList.add("on");
+  if (id === "debugger") { const lg = $("log"); lg.scrollTop = lg.scrollHeight; }   // a hidden log forgets its scroll position
 }
 function menuHide(id) {
   const m = $("menu-" + id); if (m.style.display !== "block") return;
@@ -2551,8 +2665,10 @@ function wmBuild() {
 
 // ---- settings (config\settings.json) ----
 function wmCleanSettings(raw) {
-  const s = { gearTop: true, cpsOff: false, cpsColor: true, animOff: false, eightKeys: false, social: {} };
+  const s = { gearTop: true, cpsOff: false, cpsColor: true, animOff: false, oldAnim: false, eightKeys: false, social: {} };
   if (raw && typeof raw === "object") {
+    Object.keys(raw).forEach(k => { if (!has(s, k)) s[k] = raw[k]; });   // settings from other versions are kept, never dropped
+    if (typeof raw.oldAnim === "boolean") s.oldAnim = raw.oldAnim;
     if (typeof raw.gearTop === "boolean") s.gearTop = raw.gearTop;
     if (typeof raw.cpsOff === "boolean") s.cpsOff = raw.cpsOff;
     if (typeof raw.cpsColor === "boolean") s.cpsColor = raw.cpsColor;
@@ -2564,7 +2680,7 @@ function wmCleanSettings(raw) {
 }
 function wmApplySettings() {
   const s = WM.set;
-  $("optGearTop").checked = s.gearTop; $("optCpsOff").checked = s.cpsOff; $("optCpsColor").checked = s.cpsColor; $("optAnimOff").checked = s.animOff;
+  $("optGearTop").checked = s.gearTop; $("optCpsOff").checked = s.cpsOff; $("optCpsColor").checked = s.cpsColor; $("optAnimOff").checked = s.animOff; $("optOldAnim").checked = s.oldAnim;
   document.documentElement.classList.toggle("noanim", s.animOff);
   $("optEight").checked = s.eightKeys; $("mode8").style.display = s.eightKeys ? "" : "none";
   $("divider").style.bottom = WORK_BOTTOM + "px";
@@ -2587,13 +2703,14 @@ function wmApplySettings() {
 }
 function wmSettingChanged() {
   const s = WM.set;
-  s.gearTop = $("optGearTop").checked; s.cpsOff = $("optCpsOff").checked; s.cpsColor = $("optCpsColor").checked; s.animOff = $("optAnimOff").checked; s.eightKeys = $("optEight").checked;
+  s.gearTop = $("optGearTop").checked; s.cpsOff = $("optCpsOff").checked; s.cpsColor = $("optCpsColor").checked; s.animOff = $("optAnimOff").checked; s.oldAnim = $("optOldAnim").checked; s.eightKeys = $("optEight").checked;
   SOCIALS.forEach(x => { s.social[x.id] = $("optSocial_" + x.id).checked; });
   const keysBefore = WM.keysShown;
   wmApplySettings();
   if (keysBefore !== undefined && keysBefore !== WM.keysShown) wmRefitKeys();
-  const body = JSON.stringify(s);
-  WM.schain = WM.schain.then(() => fetch("/api/settings", { method: "POST", headers: { "X-ESPdevice": "1", "Content-Type": "application/json" }, body: body }).catch(() => {}));
+  const body = JSON.stringify(s), modeChanged = keysBefore !== undefined && keysBefore !== WM.keysShown;
+  WM.schain = WM.schain.then(() => fetch("/api/settings", { method: "POST", headers: { "X-ESPdevice": "1", "Content-Type": "application/json" }, body: body }).catch(() => {}))
+    .then(() => { if (modeChanged) return poll(); });   // 3-key and 8-key have separate profile lists: load the other one now
 }
 
 async function wmInit() {
@@ -2604,14 +2721,14 @@ async function wmInit() {
   WM.fresh = !(res[0] && typeof res[0] === "object" && res[0].win);
   WM.L = wmClean(res[0]);
   wmApplySettings();
-  [["gearBtn", "Settings"], ["themeBtn", "Theme"]].forEach(p => {   // Settings_icon.png / Theme_icon.png replace the button text
+  [["gearBtn", "Settings"], ["themeBtn", "Theme"], ["dbgBtn", "Debugger"]].forEach(p => {   // Settings_icon.png / Theme_icon.png replace the button text
     const gi = new Image(); gi.alt = ""; gi.draggable = false;
     gi.onload = () => { const g = $(p[0]); g.textContent = ""; g.appendChild(gi); g.classList.add("hasicon"); };
     gi.src = "/api/icon/" + p[1] + "?v=" + Date.now();
   });
   wmPlaceAll();
   $("desk").classList.add("ready");
-  window.addEventListener("resize", wmPlaceAll);
+  window.addEventListener("resize", wmOnResize);
   window.addEventListener("pagehide", wmFlush);
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") wmFlush(); });
 }
@@ -2620,11 +2737,11 @@ async function wmInit() {
 static const char* HTML_JS2 = R"HTMLX(
 async function selectProfile() { applyState(await api("/api/select", { index: parseInt($("profileSelect").value, 10) })); }
 async function addProfile() {
-  const name = prompt("New profile name:", "Profile " + (S.profiles.length + 1));
+  const name = prompt("New profile name:", "Profile " + (S.profiles.filter(p => !p.test).length + 1));
   if (name === null) return;
   const r = await api("/api/add", { name: name });
   applyState(r);
-  if (!r.error) { const idx = r.profiles.length - 1; applyState(await api("/api/select", { index: idx })); }
+  if (!r.error) { const idx = r.profiles.length - 2; applyState(await api("/api/select", { index: idx })); }   /* the new profile sits just above "test" */
 }
 async function renameProfile() {
   const name = prompt("Rename profile:", S.profiles[S.activeIndex].name);
@@ -2862,14 +2979,23 @@ async function loadArt() {
 }
 
 // ---- CPS (presses in the last second) and Total (all presses, counted by the app and saved across restarts) ----
-let replayUntil = 0, cpsTimes = [], cTotal = 0, cSrv = -1;
+let replayUntil = 0, cpsTimes = [], cTotal = 0, cSrv = -1, cSince = 0;
+// big numbers: up to 4 digits full size, 5 and 6 digits smaller, from a million on short (1.25M, 12.3M, 123M, 1.23B); the exact value is the hover text
+function fmtBig(n) {
+  if (n < 1e6) return { t: n.toLocaleString("en-US"), c: n < 1e4 ? "" : n < 1e5 ? "d5" : "d6" };
+  const u = [[1e12, "T"], [1e9, "B"], [1e6, "M"]];
+  for (let i = 0; i < u.length; i++) if (n >= u[i][0]) {
+    const v = n / u[i][0], d = v >= 100 ? 1 : v >= 10 ? 10 : 100;
+    return { t: (Math.floor(v * d) / d) + u[i][1], c: "dm" };
+  }
+}
 function paintCounters() {
   const now = performance.now(), st = (typeof WM !== "undefined" && WM.set) ? WM.set : { cpsOff: false, cpsColor: true };
   while (cpsTimes.length && now - cpsTimes[0] > 1000) cpsTimes.shift();
   const n = st.cpsOff ? 0 : cpsTimes.length;
-  const c = $("cCps"), t = $("cTotal"), cs = String(n), ts = cTotal.toLocaleString("en-US");
+  const c = $("cCps"), t = $("cTotal"), cs = String(n), f = fmtBig(cTotal);
   if (c.textContent !== cs) c.textContent = cs;
-  if (t.textContent !== ts) t.textContent = ts;
+  if (t.textContent !== f.t) { t.textContent = f.t; t.className = f.c; $("cTotalRow").title = "Total: " + cTotal.toLocaleString("en-US") + (cSince > 0 ? "  (since " + new Date(cSince * 1000).toLocaleDateString() + ")" : ""); }
   // 0-5 normal colour, 5-10 orange, 10-15 red, 15+ purple (can be switched off in SETTINGS)
   const k = (st.cpsColor && n >= 15) ? 3 : (st.cpsColor && n >= 10) ? 2 : (st.cpsColor && n >= 5) ? 1 : 0;
   c.className = (c.className.indexOf("pop") >= 0 ? "pop " : "") + (k ? "cps" + k : "");
@@ -2878,12 +3004,11 @@ function cpsHit() {
   const off = typeof WM !== "undefined" && WM.set && WM.set.cpsOff;
   if (!off) cpsTimes.push(performance.now());
   cTotal++; paintCounters();
-  const sp = off ? [$("cTotal")] : [$("cCps"), $("cTotal")];   // only the numbers pop
-  sp.forEach(e => { e.classList.remove("pop"); void e.offsetWidth; e.classList.add("pop"); });
+  if (!off) { const e = $("cCps"); e.classList.remove("pop"); void e.offsetWidth; e.classList.add("pop"); }   // only the CPS number pops
 }
 function syncTotal(total, since) {
   if (total !== cSrv) { cSrv = total; cTotal = total; paintCounters(); }
-  if (since > 0) $("cTotalRow").title = "since " + new Date(since * 1000).toLocaleDateString();
+  if (since > 0 && since !== cSince) { cSince = since; cSrv = -2; if (total === cTotal) cTotal = total; paintCounters(); }
 }
 async function resetCounters() {
   if (!confirm("Reset the Total and CPS counters to zero?")) return;
@@ -2917,6 +3042,7 @@ static std::string WebsiteHtml() {
     s += HTML_JS_THEME;
     s += HTML_JS_WM1;
     s += HTML_JS_WM2;
+    s += HTML_JS_WM3;
     s += HTML_JS2;
     const std::string marker = "@@VER@@", ver = ESP_VERSION;
     for (size_t p = s.find(marker); p != std::string::npos; p = s.find(marker, p + ver.size())) s.replace(p, marker.size(), ver);

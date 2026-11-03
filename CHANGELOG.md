@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.0 (in progress: first part)
+- **Visualizer**: keys centred, **CPS** at the bottom left and **Total** (smaller) at the bottom right, each in its own row so they can't wrap or get cut off any more (this was the "counter disappears" bug). The Total no longer pops; CPS still does. Big numbers shrink (5 and 6 digits) and are shortened from a million (1.25M, 12.3M, 123M, 1.23B); hover for the exact value.
+- **Profiles per mode**: 3-key and 8-key have separate lists. 3-key keeps `profiles.json` in the same format, 8-key uses `profiles8.json` (starts as a copy of the 3-key list). The old file is backed up once as `profiles.pre-1.2.bak`.
+- **test profile** at the end of every list: can't be renamed or removed, no bindings, never saved. The keys light up and count, but nothing is typed.
+- **SERVICE window removed**: pause / resume / terminate are in SETTINGS.
+- **DEBUGGER** is now a pull-down button under SETTINGS (uses `Debugger_icon.png` when present); its window is gone.
+- New default layout: PROFILE and VISUALIZER on the left, KEYBINDS on the right. It re-fits automatically when the browser window changes size (square, small, fullscreen) until you arrange windows yourself; arranged windows stay inside the browser window. In a small window the social links hide and `[8-key Mode Active]` moves to the bottom left.
+- **Animations**: windows now expand then roll out (a thin bar spreads along x, then grows down) and minimize the same way backwards, at 30 fps. SETTINGS > old animations brings back zoom and fade; disable animations still turns everything off.
+- **8-key hot-plug**: the firmware ignores extension pins until they have been HIGH for 50 ms (so a pin that starts LOW or glitches while plugging in is ignored) and re-initialises them regularly. The DEBUGGER log now says when an extension key sends its first signal, when signals are ignored because 8-key support is off, and when the mode changes. Please re-flash the firmware.
+- **Compatibility**: no file fields were renamed or removed. Settings and layout entries written by other versions are kept when saving.
+
 ## 1.1.0
 - PROFILE, VISUALIZER, KEYBINDS, SERVICE and DEBUGGER are floating windows: drag anywhere (freeform, nothing snaps), resize from either bottom corner, and minimize into a small, draggable, resizable icon window. Minimizing and restoring zoom and fade between the window and its icon (30 fps).
 - The default arrangement matches 1.0 (two columns). Windows start cut to their content, in width and height, with no empty space. Snapping windows is planned for a future build.

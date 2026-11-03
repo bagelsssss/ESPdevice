@@ -1,14 +1,13 @@
 # Icon art
 
-Drop PNG files into `config\icons\` (next to the exe). **256x256 px, transparent background.** They are scaled down automatically (to about 22 px in title bars and buttons), so keep the art bold and readable when small. Missing files simply fall back to placeholders or text.
+Drop PNG files into `config\icons\` (next to the exe). **64x64 px, transparent background.** They are scaled down automatically (to about 22 px in title bars and buttons), so keep the art bold and readable when small. Missing files simply fall back to placeholders or text.
 
 | File | Used for |
 |---|---|
 | `Profile_icon.png` | PROFILE window: minimized icon and title bar |
 | `Visualizer_icon.png` | VISUALIZER window: minimized icon and title bar |
 | `Keybinds_icon.png` | KEYBINDS window: minimized icon and title bar |
-| `Service_icon.png` | SERVICE window: minimized icon and title bar |
-| `Debugger_icon.png` | DEBUGGER window: minimized icon and title bar |
+| `Debugger_icon.png` | The `[ DEBUGGER ]` button under settings |
 | `Theme_icon.png` | The top-right `[ THEMES ]` button |
 | `Settings_icon.png` | The top-right `[ SETTINGS ]` button |
 | `Github_icon.png`, `Youtube_icon.png`, `Tiktok_icon.png`, `Discord_icon.png` | Optional: replace the social text links |

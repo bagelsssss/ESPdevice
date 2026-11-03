@@ -67,27 +67,31 @@ You still need to build and flash the keypad itself, see [Make your own keypad](
 - Opts out of Windows 11 background power throttling and uses 1 ms timer resolution so repeat timing stays accurate.
 
 **Profiles**
-- Up to 99 profiles, each with its own 3 bindings. Add, rename, delete and switch from the page.
-- Saved atomically to `config\profiles.json`, so a crash mid-save can't corrupt it.
+- Up to 99 profiles, each with its own bindings. Add, rename, delete and switch from the page.
+- **3-key and 8-key mode have separate profile lists** (new in 1.2): 3-key keeps `config\profiles.json` exactly as before, 8-key uses `config\profiles8.json` (the first time you use 8-key mode it starts as a copy of the 3-key list). A one-time backup of the old file is made as `config\profiles.pre-1.2.bak`.
+- Every list ends with a built-in **test** profile: it can't be renamed or removed, has no bindings (the keys send nothing) and is never saved. The keys still light up and count in CPS / Total, so you can test the keypad without typing random keys.
+- Saved atomically, so a crash mid-save can't corrupt a file.
 
 **Visualizer and debugger**
 - Live key visualizer: presses are pushed to the page instantly (Server-Sent Events, no polling).
-- Debugger: link status and COM port, reports per second, event log (freeze/clear), your Windows hold delay and repeat rate, and measured latency (last / average / max) from byte received to `SendInput` returned.
+- Debugger (the `[ DEBUGGER ]` pull-down under the settings button): link status and COM port, reports per second, event log (freeze/clear), your Windows hold delay and repeat rate, and measured latency (last / average / max) from byte received to `SendInput` returned.
 
 **Windows (new in 1.1)**
-- PROFILE, VISUALIZER, KEYBINDS, SERVICE and DEBUGGER are floating windows. Drag one by the title bar to put it anywhere, with nothing snapping. Each window has a resize handle in both bottom corners and shows its own icon at the right end of the title bar (if you made one, see [ICONS.md](ICONS.md)).
-- The first time (or after RESET WINDOW LAYOUT) the windows are arranged like in 1.0: two columns in the middle of the page, PROFILE, VISUALIZER, KEYBINDS and SERVICE on the left and DEBUGGER on the right. Windows start cut to their content, in width and height, with no empty space (KEYBINDS and DEBUGGER keep the full column width). If the browser window is too short, KEYBINDS gives up height first and scrolls.
+- PROFILE, VISUALIZER and KEYBINDS are floating windows (SERVICE moved into SETTINGS, DEBUGGER is a pull-down button). Drag one by the title bar to put it anywhere, with nothing snapping. Each window has a resize handle in both bottom corners and shows its own icon at the right end of the title bar (if you made one, see [ICONS.md](ICONS.md)).
+- The first time (or after RESET WINDOW LAYOUT) the windows are arranged like in 1.0: two columns in the middle of the page, PROFILE and VISUALIZER on the left and KEYBINDS on the right. Windows start cut to their content, in width and height, with no empty space. If the browser window is too short, KEYBINDS gives up height first and scrolls.
+- **The layout follows the browser window** (new in 1.2): while you haven't moved or resized a window yourself, the default layout is rebuilt whenever the browser window changes size, so it fits when the window is square, small or fullscreen (a narrow window gets one column). Once you arrange windows yourself they keep their saved position and size; they are only kept inside the browser window and return to their saved size when the window grows again. In a small or square window the social links hide and `[8-key Mode Active]` moves to the bottom left.
 - Resize a window by dragging the small corner mark at its bottom-left or bottom-right.
-- Click the `v` button to minimize a window: it zooms and fades into a small icon window where it was (30 fps). The icon window can be dragged and resized too. `^` (or a double-click) zooms the window back out, right where the icon window is now.
+- Click the `v` button to minimize a window: it rolls up and narrows into a small icon window where it was (30 fps). The icon window can be dragged and resized too. `^` (or a double-click) expands the window back out (a thin bar spreads out, then the window rolls down), right where the icon window is now. SETTINGS > old animations brings back the zoom and fade.
 - Snapping windows to zones is planned for a future build.
 - Everything is remembered exactly: position, size, minimized state, icon window position and size and stacking order, saved in `config\layout.json`. **SETTINGS > RESET WINDOW LAYOUT** puts everything back.
-- Icons: put 256x256 PNG files in `config\icons\` named `Profile_icon.png`, `Visualizer_icon.png`, `Keybinds_icon.png`, `Service_icon.png`, `Debugger_icon.png` (minimized icon and title bar), `Theme_icon.png` and `Settings_icon.png` (the two top-right buttons), all with a transparent background. Without them a placeholder or text is shown. Full list in [ICONS.md](ICONS.md).
+- Icons: put 64x64 PNG files in `config\icons\` named `Profile_icon.png`, `Visualizer_icon.png`, `Keybinds_icon.png` (minimized icon and title bar), `Theme_icon.png`, `Settings_icon.png` and `Debugger_icon.png` (the top-right buttons), all with a transparent background. Without them a placeholder or text is shown. Full list in [ICONS.md](ICONS.md).
 
 **Settings and extras**
 - A thin line across the page (50% opacity) separates the windows from the links and status strip. Windows can still be dragged below it.
-- The VISUALIZER shows **CPS** (key presses in the last second, all keys) and **Total** (every press since the counter started) beside the keys. Only the numbers pop on every press. CPS is colour coded: normal 0-5, orange 5-10, red 10-15, purple 15+. The app counts the total itself, so presses are counted even with the page closed; it is saved in `config\counters.json`. Everything can be switched off in SETTINGS.
+- The VISUALIZER shows the keys centred, with **CPS** (key presses in the last second, all keys) at the bottom left and **Total** (every press since the counter started, smaller) at the bottom right. Only the CPS number pops on every press. Big totals shrink: up to 4 digits full size, 5 and 6 digits smaller, from a million on they are shortened (1.25M, 12.3M, 123M, 1.23B); hover the Total for the exact value. CPS is colour coded: normal 0-5, orange 5-10, red 10-15, purple 15+. The app counts the total itself, so presses are counted even with the page closed; it is saved in `config\counters.json`. Everything can be switched off in SETTINGS.
 - The settings and themes buttons and the social links become your own icons when `Settings_icon.png`, `Theme_icon.png`, `Github_icon.png` and so on exist in `config\icons\`; otherwise text is shown.
-- `[ THEMES ]` and `[ SETTINGS ]` at the top right are pull-down menus that hang from their button (click outside, press Esc or click the button again to close). Opening spreads a thin bar out from the button and then grows the panel downward; closing shrinks and fades it out. THEMES holds the theme picker and colour editor. SETTINGS (saved in `config\settings.json`) has: reset window layout, keep the two buttons on top of the windows, 8-key support (experimental), reset total / CPS, disable CPS counter, colored cps, disable animations, and which social links to show.
+- `[ THEMES ]`, `[ SETTINGS ]` and `[ DEBUGGER ]` (below settings) at the top right are pull-down menus that hang from their button (click outside, press Esc or click the button again to close). Opening spreads a thin bar out from the button and then grows the panel downward; closing shrinks and fades it out. THEMES holds the theme picker and colour editor. SETTINGS (saved in `config\settings.json`) has: reset window layout, keep the buttons on top of the windows, 8-key support (experimental), reset total / CPS, disable CPS counter, colored cps, disable animations, old animations, SERVICE (pause / resume typing, terminate) and which social links to show. Settings written by other versions are kept when you save.
+- Layout and settings files stay compatible with older versions: nothing was renamed or removed, new data lives in new fields or files.
 - Social links (GitHub, YouTube, TikTok, Discord) sit in the bottom-left corner and can be switched off one by one.
 - The connection status (for example `CONNECTED COM3 | ACTIVE`) and the credit with the version number sit in the bottom-right corner.
 
@@ -214,12 +218,11 @@ Open http://localhost:9191 (or tray icon > Open Settings).
 
 | Section | What it does |
 |---------|--------------|
-| **SETTINGS** | Pull-down from the button at the top right: buttons on top, CPS options, social links, reset total / CPS, reset window layout. |
+| **SETTINGS** | Pull-down from the button at the top right: buttons on top, 8-key, CPS options, animations, SERVICE (pause / resume / terminate), social links, reset total / CPS, reset window layout. |
 | **PROFILE** | Pick, add, rename or delete profiles (up to 99). |
 | **VISUALIZER** | Shows the keys (3, or 8 in 8-key mode) lighting up live, with their current bindings, plus the CPS and Total counters. |
 | **KEYBINDS** | Edit each key's binding: type + ENTER, or CAPTURE. |
-| **SERVICE** | PAUSE / RESUME typing, or TERMINATE the app. |
-| **DEBUGGER** | Link status, reports per second, latency stats, live event log. |
+| **DEBUGGER** | Pull-down button under SETTINGS: link status, reports per second, latency stats, live event log. |
 | **THEMES** | Pull-down from the `[ THEMES ]` button at the top right. Switch, copy, rename, delete and edit color themes. |
 
 ## Troubleshooting
@@ -261,6 +264,9 @@ app/espdevice.rc, espdevice.ico    Tray/exe icon
 installer/ESPdevice.iss            Inno Setup script for ESPdevice-Setup.exe
 .github/workflows/build.yml        Builds the exe, installer and portable zip; attaches them to releases
 ```
+
+To publish a new version: push a tag like `v1.1.1`. GitHub Actions writes the version number into `app/version.h`, builds everything and attaches it to a Release.
+
 ## License
 
 The code is licensed under the [GNU GPL v3.0](LICENSE). The logo and icon artwork are made by bagelings and are all rights reserved.
