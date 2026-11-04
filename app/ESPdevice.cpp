@@ -1389,22 +1389,6 @@ static void HandleRequest(SOCKET client) {
             response = HttpResponse("200 OK", "application/json", "{\"ok\":true}");
         }
     }
-    else if (method == "GET" && path.rfind("/api/icon/", 0) == 0) {
-        // Minimized-window icons: config\icons\<Name>_icon.png (for example Profile_icon.png). 404 = the page shows its placeholder.
-        std::string name = path.substr(10);
-        bool okName = !name.empty() && name.size() <= 24;
-        for (char c : name) if (!std::isalnum((unsigned char)c) && c != '_') okName = false;
-        std::string png;
-        if (okName) {
-            std::wstring wname(name.begin(), name.end());
-            std::ifstream f(g_configDir / L"icons" / (wname + L"_icon.png"), std::ios::binary);
-            if (f.is_open()) { std::ostringstream ss; ss << f.rdbuf(); png = ss.str(); }
-        }
-        if (png.size() < 8 || png.size() > 1048576 || png.compare(0, 8, "\x89PNG\r\n\x1a\n", 8) != 0)
-            response = HttpResponse("204 No Content", "text/plain", ""); // no icon file: the page keeps its placeholder (204 = no console noise)
-        else
-            response = HttpResponse("200 OK", "image/png", png);
-    }
     else if (method == "GET" && path == "/api/logo") {
         std::string png;
         {
@@ -1917,12 +1901,11 @@ html, body { height: 100%; margin: 0; overflow: hidden; background: var(--c-bg);
 .rsz.r { left: auto; right: 0; cursor: nwse-resize; }
 .rsz.r::after { left: auto; right: 2px; border-left: 0; border-right: 2px solid var(--c-dim); }
 .wbody > :last-child { margin-bottom: 0; }
-.wicon { flex: none; width: 22px; height: 22px; object-fit: contain; pointer-events: none; }
+.pix { display: block; background-color: currentColor; -webkit-mask: var(--pix) 0 0 / 100% 100% no-repeat; mask: var(--pix) 0 0 / 100% 100% no-repeat; image-rendering: pixelated; pointer-events: none; }   /* the built-in 16x16 icons, drawn in the text colour */
+.wicon { flex: none; width: 16px; height: 16px; margin: 0 4px; color: var(--c-fg); }
 /* minimized: a small icon window */
 .mini { position: absolute; display: none; background: var(--c-bg); border: 1px solid var(--c-border); cursor: move; touch-action: none; user-select: none; -webkit-user-select: none; overflow: hidden; }
-.mph, .mimg { position: absolute; left: 8px; top: 8px; width: calc(100% - 16px); height: calc(100% - 16px); pointer-events: none; }
-.mph { color: var(--c-fg); } .mph svg { display: block; width: 100%; height: 100%; }
-.mimg { object-fit: contain; }
+.mimg { position: absolute; left: 0; top: 0; width: 32px; height: 32px; color: var(--c-fg); }   /* size and position are set in whole pixels by wmFitMini so the pixels stay sharp and centred */
 .mcar { position: absolute; left: 3px; top: 3px; width: 18px; height: 18px; min-width: 0; padding: 0; font-size: 12px; line-height: 1; display: flex; align-items: center; justify-content: center; z-index: 3; }
 /* corner widgets */
 .tbtns { position: fixed; right: 16px; top: 16px; z-index: 3; display: grid; grid-template-columns: auto auto; gap: 8px; justify-items: end; }
@@ -1958,12 +1941,9 @@ button:disabled:hover { background: var(--c-btn-bg); color: var(--c-btn-fg); }
 @media (prefers-reduced-motion: reduce) { .menu.opening, .menu.closing { animation: none; } }
 html.noanim .menu.opening, html.noanim .menu.closing, html.noanim .crow span.pop { animation: none !important; }   /* SETTINGS > disable animations */
 .gear img { display: block; width: 24px; height: 24px; object-fit: contain; pointer-events: none; }
-.gear.hasicon { padding: 3px; background: transparent; border-color: transparent; }
-.gear.hasicon:hover { background: var(--c-btn-hover-bg); border-color: var(--c-btn-border); }
 .divider { position: fixed; left: 0; right: 0; bottom: 64px; height: 1px; background: var(--c-border); opacity: 0.5; z-index: 1; pointer-events: none; }
 .socials { position: fixed; left: 16px; bottom: 12px; z-index: 1; display: flex; gap: 14px; }
 .socials a { color: var(--c-dim); text-decoration: none; display: flex; align-items: center; }
-.sicon { display: block; width: 22px; height: 22px; object-fit: contain; }
 .socials a:hover { color: var(--c-fg); text-decoration: underline; }
 .br { position: fixed; right: 16px; bottom: 12px; z-index: 1; text-align: right; }
 .credit { opacity: 0.5; color: var(--c-credit); }
@@ -2454,14 +2434,25 @@ static const char* HTML_JS_WM1 = R"HTMLX(
 // minimize with "v" (it becomes a small icon window; "^" opens it again).
 // Positions, sizes, minimized state and stacking order are saved to config\layout.json.
 const WIN_IDS = ["profile", "visualizer", "keybinds"];   // SERVICE moved into SETTINGS, DEBUGGER is a pull-down now
-const WIN_ICON = { profile: "Profile", visualizer: "Visualizer", keybinds: "Keybinds" }; // config\icons\<Name>_icon.png
+// Built-in 16x16 one-bit icons (centred, 1px margin); drawn through a mask so they take the theme's text colour.
+const WIN_PIX = {
+  profile: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAARElEQVR42mNgoBAw4pH7T4JaDI3/SRAnaDNeOSZKw2DwGvCf2LChSTRSJSH9J1Y9Ix6NpMgRTEAE1f4nw/v/qZIOKAYAvnwRA0TxpasAAAAASUVORK5CYII=",
+  visualizer: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAATklEQVR42qWRsRIAIAhCyev/f5kWl7zqElyceAIC5ozcNPUSgAAQboRQrqoAZmY6DuwIW/MdAKuwA7iKXwA6HRzb/v0vG04oWa6aaUL8WXJxEgwRkwinAAAAAElFTkSuQmCC",
+  keybinds: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAOUlEQVR42mNgGGjAiEfuPwlqCRrwH5ciJkq9QLEBLCR4Y5ACRjxRRqwYzigjSmxwReN/IqNxkEUtAIktEAdBbQ6UAAAAAElFTkSuQmCC"
+};
+function wmFitMini(m, img) {   // whole-number scale (16 px per step) and whole-pixel centring of the icon in its icon window
+  const w = m.clientWidth, h = m.clientHeight; if (!w || !h) return;
+  const k = Math.max(1, Math.floor((Math.min(w, h) - 8) / 16)), z = 16 * k;
+  img.style.width = z + "px"; img.style.height = z + "px";
+  img.style.left = Math.floor((w - z) / 2) + "px"; img.style.top = Math.floor((h - z) / 2) + "px";
+}
 const WORK_BOTTOM = 64;   // the bottom strip (links, status) under the divider line; default windows stay above it
 const MIN_W = 200, MIN_H = 56, MINI_MIN = 36, MINI_W = 88, MINI_H = 64;
 const SOCIALS = [
-  { id: "github",  label: "github",  icon: "Github",  url: "https://github.com/bagelsssss" },
-  { id: "youtube", label: "youtube", icon: "Youtube", url: "https://www.youtube.com/@bagelsssss" },
-  { id: "tiktok",  label: "tiktok",  icon: "Tiktok",  url: "https://www.tiktok.com/@bagel.sssss" },
-  { id: "discord", label: "discord", icon: "Discord", url: "https://discord.com/users/920728577622835251" }
+  { id: "github",  label: "github",   url: "https://github.com/bagelsssss" },
+  { id: "youtube", label: "youtube", url: "https://www.youtube.com/@bagelsssss" },
+  { id: "tiktok",  label: "tiktok",   url: "https://www.tiktok.com/@bagel.sssss" },
+  { id: "discord", label: "discord", url: "https://discord.com/users/920728577622835251" }
 ];
 const WM = { fresh: false, fitted: false, L: null, set: null, el: {}, mini: {}, timer: 0, chain: Promise.resolve(), schain: Promise.resolve(), fly: null };
 
@@ -2845,9 +2836,7 @@ function wmBuild() {
       sb.onclick = e => { e.stopPropagation(); statsToggle(); };
       bar.appendChild(sb);
     }
-    const wi = new Image(); wi.className = "wicon"; wi.alt = ""; wi.draggable = false; wi.style.display = "none";
-    wi.onload = () => { wi.style.display = ""; };                         // shown only once your icon file exists
-    wi.src = "/api/icon/" + WIN_ICON[id] + "?v=" + Date.now();
+    const wi = document.createElement("span"); wi.className = "wicon pix"; wi.style.setProperty("--pix", "url(" + WIN_PIX[id] + ")");
     bar.appendChild(wi);
     el.insertBefore(bar, el.firstChild);
     const rz = document.createElement("div"); rz.className = "rsz"; rz.title = "Drag to resize";
@@ -2859,16 +2848,13 @@ function wmBuild() {
     el.addEventListener("pointerdown", () => wmFront(id));
 
     const m = document.createElement("div"); m.className = "mini"; m.id = "m-" + id; m.title = title + " - click ^ or double-click to open";
-    const ph = document.createElement("div"); ph.className = "mph";
-    ph.innerHTML = '<svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet"><rect x="6" y="6" width="88" height="88" fill="none" stroke="currentColor" stroke-width="3"/><text x="50" y="62" text-anchor="middle" font-size="30" fill="currentColor" font-family="monospace">' + abbr + '</text></svg>';
-    const img = new Image(); img.className = "mimg"; img.alt = ""; img.draggable = false; img.style.display = "none";
-    img.onload = () => { img.style.display = ""; ph.style.display = "none"; };   // your own icon replaces the placeholder
-    img.src = "/api/icon/" + WIN_ICON[id] + "?v=" + Date.now();
+    const img = document.createElement("span"); img.className = "mimg pix"; img.style.setProperty("--pix", "url(" + WIN_PIX[id] + ")");
+    if (window.ResizeObserver) new ResizeObserver(() => wmFitMini(m, img)).observe(m);
     const car = document.createElement("button"); car.className = "mcar"; car.textContent = "^"; car.title = "Open"; car.setAttribute("aria-label", "Open " + title);
     car.onclick = () => wmRestore(id);
     const rz2 = document.createElement("div"); rz2.className = "rsz"; rz2.title = "Drag to resize";
     const rz2r = document.createElement("div"); rz2r.className = "rsz r"; rz2r.title = "Drag to resize";
-    m.appendChild(ph); m.appendChild(img); m.appendChild(car); m.appendChild(rz2); m.appendChild(rz2r);
+    m.appendChild(img); m.appendChild(car); m.appendChild(rz2); m.appendChild(rz2r);
     m.addEventListener("pointerdown", e => wmBeginMove(e, id, true));
     rz2.addEventListener("pointerdown", e => wmBeginResize(e, id, true, "l"));
     rz2r.addEventListener("pointerdown", e => wmBeginResize(e, id, true, "r"));
@@ -2913,10 +2899,7 @@ function wmApplySettings() {
     if (!s.social[x.id] || !x.url) return;
     const a = document.createElement("a"); a.href = x.url; a.target = "_blank"; a.rel = "noopener noreferrer"; a.title = x.label;
     const sp = document.createElement("span"); sp.textContent = "[" + x.label + "]";
-    const im = new Image(); im.className = "sicon"; im.alt = x.label; im.style.display = "none";
-    im.onload = () => { im.style.display = ""; sp.style.display = "none"; };   // your icon (config\icons\Github_icon.png ...) replaces the text
-    im.src = "/api/icon/" + x.icon + "?v=" + Date.now();
-    a.appendChild(im); a.appendChild(sp);
+    a.appendChild(sp);
     nav.appendChild(a);
   });
 }
@@ -2941,11 +2924,6 @@ async function wmInit() {
   WM.fresh = !(res[0] && typeof res[0] === "object" && res[0].win);
   WM.L = wmClean(res[0]);
   wmApplySettings();
-  [["gearBtn", "Settings"], ["themeBtn", "Theme"], ["dbgBtn", "Debugger"]].forEach(p => {   // Settings_icon.png / Theme_icon.png replace the button text
-    const gi = new Image(); gi.alt = ""; gi.draggable = false;
-    gi.onload = () => { const g = $(p[0]); g.textContent = ""; g.appendChild(gi); g.classList.add("hasicon"); };
-    gi.src = "/api/icon/" + p[1] + "?v=" + Date.now();
-  });
   wmPlaceAll();
   $("desk").classList.add("ready");
   window.addEventListener("resize", wmOnResize);
@@ -3091,7 +3069,7 @@ grip|Window grip mark|.grip|cdw
 wbtn|Window buttons (minimize, stats)|.wbtn|cbdw
 rsz|Resize corner marks|.rsz::after|d
 mini|Icon window (minimized)|.mini|bdw
-mph|Icon placeholder text|.mph|c
+mph|Icons (title bar and icon window)|.wicon, .mimg|c
 mcar|Icon window open button|.mcar|cbd
 #MENUS
 menu|Pull-down panels|.menu|bdw

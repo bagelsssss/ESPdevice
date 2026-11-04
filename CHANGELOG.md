@@ -1,6 +1,7 @@
 # Changelog
 
 ## 1.2.0
+- **Icons**: PROFILE, VISUALIZER and KEYBINDS have built-in 16x16 pixel icons inside the exe (title bar and icon window), centred, in the theme's text colour. Loading icon files from `config\icons\` was removed (the top-right buttons and social links are text); the icon system will be revamped in the next update. `ICONS.md` is gone.
 - **Advanced theming** (SETTINGS > THEMING, off by default): in THEMES, edit individual elements (text, backgrounds, window lines, buttons, inputs, fonts, sizes) of any custom theme, with PICK AN ELEMENT to click the thing you want. Edits are per theme, saved in the new `config\theme_advanced.json` (older builds ignore it); switching it off shows the plain theme and keeps the edits. Built-in themes need COPY first.
 - **Visualizer**: keys centred, **CPS** at the bottom left and **Total** (same size as CPS) at the bottom right, each in its own row so they can't wrap or get cut off any more (this was the "counter disappears" bug). The Total no longer pops; CPS still does. The Total is shortened from 100,000 (123K, 1.25M, 12.3M, 123M, 1.23B); hover for the exact value.
 - **Per-key totals** (SETTINGS > per-key totals): a counter under each key, clicks since the app started.
