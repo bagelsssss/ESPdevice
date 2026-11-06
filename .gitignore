@@ -6,7 +6,9 @@ bin-release/
 
 # Other files and folders
 .settings/
-!/.github/workflows/
+
+git add -f .github/workflows/build.yml
+
 
 # Executables
 *.swf
