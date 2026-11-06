@@ -1,0 +1,13 @@
+# Optional systemd user service (install.sh --systemd). Starts ESPdevice when your desktop session starts.
+[Unit]
+Description=ESPdevice keypad driver
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=@BIN@ --background
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

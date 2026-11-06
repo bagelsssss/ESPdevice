@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=ESPdevice
+Comment=osu! keypad driver (opens the settings page)
+Exec=@BIN@
+Icon=@ICON@
+Terminal=false
+Categories=Utility;Game;
+StartupNotify=false

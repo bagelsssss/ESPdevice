@@ -6,7 +6,7 @@
 
 ![ESPdevice settings page](preview2-v1.0.png)
 
-Turn a cheap ESP32 and a few switches into a 3-key USB keypad for Windows. A small background app listens to the ESP32 over serial and types real keystrokes, with profiles, a live key visualizer, a latency debugger and themes, all in a local web page.
+Turn a cheap ESP32 and a few switches into a 3-key USB keypad for Windows (and Linux). A small background app listens to the ESP32 over serial and types real keystrokes, with profiles, a live key visualizer, a latency debugger and themes, all in a local web page.
 
 Good for gaming (bind keys to whatever your game uses, one profile per game), but it works for anything: macros, media keys, shortcuts.
 
@@ -34,8 +34,15 @@ Get the latest build from the [**Releases**](../../releases/latest) page. No Vis
 
 You still need to build and flash the keypad itself, see [Make your own keypad](#make-your-own-keypad).
 
+## Linux
+
+There is a Linux (x86_64) version of the app, released as `ESPdevice-linux-x86_64.tar.gz` (version `1.2.0_linux`). It is the same program and settings
+page; it types through a virtual keyboard (`/dev/uinput`, works on X11 and Wayland) and has no tray icon. Unpack it and run `./install.sh`, then replug the keypad.
+The step-by-step guide, permissions, troubleshooting and the differences from Windows are in [linux/README.md](linux/README.md).
+
 ## Contents
 - [Download](#download)
+- [Linux](#linux)
 - [Features](#features)
 - [Using it as a gaming keypad](#using-it-as-a-gaming-keypad)
 - [Make your own keypad](#make-your-own-keypad)
@@ -239,7 +246,7 @@ Open http://localhost:9191 (or tray icon > Open Settings).
 
 ## Limitations
 
-- Windows only.
+- Windows, and Linux on x86_64 (no ARM build, no macOS).
 - 3 keys, or up to 8 keys with the experimental 8-key mode (one ESP32, direct-wired switches, no key matrix).
 - Classic ESP32 boards that show up as a serial/COM port only (see above).
 - Key names assume a US keyboard layout.
@@ -260,15 +267,17 @@ The board sends one byte per key event at 921600 baud, so you can write your own
 
 ```
 firmware/ESPdevice/ESPdevice.ino   Arduino sketch for the ESP32
-app/ESPdevice.cpp                  The Windows app (one file; includes the website)
+app/ESPdevice.cpp                  The app for Windows and Linux (one file; includes the website)
 app/default_logo.h                 Built-in logo, embedded as bytes
 app/version.h                      The version number shown on the page (the release build writes it from the git tag)
 app/espdevice.rc, espdevice.ico    Tray/exe icon
 installer/ESPdevice.iss            Inno Setup script for ESPdevice-Setup.exe
 .github/workflows/build.yml        Builds the exe, installer and portable zip; attaches them to releases
+.github/workflows/linux.yml        Builds the Linux tar.gz, runs its self-test, attaches it to releases of tags ending in _linux
+linux/                             Linux install / uninstall scripts, udev rule, menu entry, systemd unit, self-test, guide
 ```
 
-To publish a new version: push a tag like `v1.1.1`. GitHub Actions writes the version number into `app/version.h`, builds everything and attaches it to a Release.
+To publish a new Windows version: push a tag like `v1.1.1`. To publish the Linux version: push a tag ending in `_linux`, for example `1.2.0_linux`. GitHub Actions writes the version number into `app/version.h`, builds everything and attaches it to a Release.
 
 ## License
 

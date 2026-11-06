@@ -22,3 +22,10 @@ Close any older copy first or both will type every key. Your `config\` folder
 ## Use
 Run `ESPdevice.exe`, then tray icon > right-click > Open Settings (or browse to
 http://localhost:9191). Only one copy can run at a time.
+
+## Linux
+
+    g++ -std=c++17 -O2 -pthread -static-libstdc++ -static-libgcc ESPdevice.cpp -o espdevice
+    python3 ../linux/selftest.py ./espdevice
+
+`default_logo.h` and `version.h` must be next to `ESPdevice.cpp`; `espdevice.rc` and the icon are Windows-only. See `linux/README.md` for installing and using it.

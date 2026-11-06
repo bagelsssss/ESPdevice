@@ -20,6 +20,7 @@
 // black terminal. All colours/fonts live in one CSS block at the top of
 // the page so the look can be replaced later.
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <winsock2.h>
@@ -31,6 +32,30 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "shell32.lib")
+#else
+// ---- Linux build: POSIX sockets, termios serial port, uinput virtual keyboard. No tray icon (see README). ----
+#include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <sys/resource.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <termios.h>
+#include <poll.h>
+#include <signal.h>
+#include <spawn.h>
+#include <glob.h>
+#include <pthread.h>
+#include <sched.h>
+#include <errno.h>
+#include <linux/uinput.h>
+#include <linux/input-event-codes.h>
+extern char** environ;
+#endif
 
 #include <string>
 #include <thread>
@@ -55,12 +80,37 @@
 
 namespace fs = std::filesystem;
 
+#ifndef _WIN32
+// Small compatibility layer so the shared code (profiles, stats, web server, key table) compiles unchanged on Linux.
+typedef uint32_t DWORD; typedef uint16_t WORD; typedef uint8_t BYTE; typedef unsigned int UINT; typedef int BOOL; typedef unsigned short u_short;
+#ifndef TRUE
+#define TRUE 1
+#define FALSE 0
+#endif
+typedef int SOCKET;
+#define INVALID_SOCKET (-1)
+#define SOCKET_ERROR (-1)
+static inline int closesocket(int s) { return close(s); }
+static inline void localtime_s(std::tm* out, const std::time_t* t) { localtime_r(t, out); }
+// Windows virtual-key numbers, only used as distinct ids in the key table; LxEvdevCode() turns them into Linux key codes.
+enum {
+    VK_PAUSE = 0x13, VK_F13 = 0x7C, VK_F14, VK_F15, VK_F16, VK_F17, VK_F18, VK_F19, VK_F20, VK_F21, VK_F22, VK_F23, VK_F24,
+    VK_BROWSER_BACK = 0xA6, VK_BROWSER_FORWARD, VK_BROWSER_REFRESH, VK_BROWSER_STOP, VK_BROWSER_SEARCH, VK_BROWSER_FAVORITES, VK_BROWSER_HOME,
+    VK_VOLUME_MUTE, VK_VOLUME_DOWN, VK_VOLUME_UP, VK_MEDIA_NEXT_TRACK, VK_MEDIA_PREV_TRACK, VK_MEDIA_STOP, VK_MEDIA_PLAY_PAUSE, VK_LAUNCH_MAIL,
+    VK_LAUNCH_MEDIA_SELECT, VK_LAUNCH_APP1, VK_LAUNCH_APP2
+};
+#endif
+
 #include "default_logo.h" // built-in logo bytes (DEFAULT_LOGO_PNG); config\default_logo.png overrides it
 #if __has_include("version.h")
 #include "version.h" // written by the release build from the git tag: #define ESP_VERSION "1.1.0"
 #endif
 #ifndef ESP_VERSION
+#ifdef _WIN32
 #define ESP_VERSION "1.1.0"
+#else
+#define ESP_VERSION "1.2.0_linux"
+#endif
 #endif
 
 // ---- Fixed config -----------------------------------------------------
@@ -80,10 +130,12 @@ constexpr int HTTP_PORT = 9191;
 constexpr int MAX_SSE_CLIENTS = 8;
 constexpr DWORD READ_WAKE_MS = 8; // read timeout: how often the device thread wakes with no data (repeat/timeout checks)
 constexpr const char* VERSION_TEXT = "ESPdevice v" ESP_VERSION;
+#ifdef _WIN32
 constexpr UINT WM_TRAYICON = WM_APP + 1;
 constexpr UINT ID_TRAY_OPEN = 1001;
 constexpr UINT ID_TRAY_PAUSE = 1002;
 constexpr UINT ID_TRAY_TERMINATE = 1003;
+#endif
 
 static std::atomic<bool> g_running{ true };
 static std::atomic<bool> g_paused{ false };
@@ -93,10 +145,20 @@ static std::atomic<bool> g_paused{ false };
 static fs::path g_configDir, g_logPath, g_profilesPath, g_activeIndexPath;
 
 static void InitPaths() {
+#ifdef _WIN32
     wchar_t buffer[MAX_PATH];
     GetModuleFileNameW(nullptr, buffer, MAX_PATH);
     fs::path exeDir = fs::path(buffer).parent_path();
     g_configDir = exeDir / L"config";
+#else
+    // Linux: $ESPDEVICE_CONFIG, else $XDG_CONFIG_HOME/espdevice, else ~/.config/espdevice
+    const char* ov = std::getenv("ESPDEVICE_CONFIG");
+    const char* xdg = std::getenv("XDG_CONFIG_HOME");
+    const char* home = std::getenv("HOME");
+    if (ov && *ov) g_configDir = ov;
+    else if (xdg && *xdg) g_configDir = fs::path(xdg) / "espdevice";
+    else g_configDir = fs::path(home && *home ? home : "/tmp") / ".config" / "espdevice";
+#endif
     std::error_code ec;
     fs::create_directories(g_configDir, ec);
     g_logPath = g_configDir / L"espdevice.log";
@@ -128,6 +190,7 @@ static void Log(const std::string& message) {
 
 // Last-resort handler for hard crashes (access violation etc.): leaves a
 // FATAL line in the log so a "silent vanish" always leaves evidence.
+#ifdef _WIN32
 static LONG WINAPI CrashFilter(EXCEPTION_POINTERS* info) {
     char buf[160];
     DWORD code = (info && info->ExceptionRecord) ? info->ExceptionRecord->ExceptionCode : 0;
@@ -137,6 +200,15 @@ static LONG WINAPI CrashFilter(EXCEPTION_POINTERS* info) {
     if (file.is_open()) file << "[" << TimestampNow() << "] " << buf << "\n";
     return EXCEPTION_EXECUTE_HANDLER;
 }
+#else
+static void CrashSignal(int sig) {
+    char buf[96];
+    snprintf(buf, sizeof(buf), "FATAL: crashed with signal %d", sig);
+    std::ofstream file(g_logPath, std::ios::app); // no mutex on purpose: the mutex may be what is stuck
+    if (file.is_open()) file << "[" << TimestampNow() << "] " << buf << "\n";
+    _exit(128 + sig);
+}
+#endif
 
 static void RunGuarded(const char* name, bool restart, const std::function<void()>& fn) {
     do {
@@ -149,6 +221,11 @@ static void RunGuarded(const char* name, bool restart, const std::function<void(
 
 // ---- High-resolution clock --------------------------------------------
 
+#ifndef _WIN32
+struct LARGE_INTEGER { int64_t QuadPart; };   // Linux: nanoseconds from CLOCK_MONOTONIC, so the timing code below is shared
+static void QueryPerformanceFrequency(LARGE_INTEGER* f) { f->QuadPart = 1000000000LL; }
+static void QueryPerformanceCounter(LARGE_INTEGER* t) { timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); t->QuadPart = (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec; }
+#endif
 static LARGE_INTEGER g_qpcFreq;
 static int64_t g_qpcStart = 0;
 
@@ -305,6 +382,7 @@ static bool CompileBinding(const std::string& raw, CompiledBinding& out, std::st
     return true;
 }
 
+#ifdef _WIN32
 // ---- SendInput --------------------------------------------------------
 
 static void FillInput(INPUT& in, const KeyDef& k, bool up) {
@@ -339,6 +417,97 @@ static void SendRepeat(const CompiledBinding& b) {
     FillInput(in, b.keys[b.count - 1], false);
     SendInput(1, &in, sizeof(INPUT));
 }
+#else
+// ---- Linux key output: a virtual keyboard made with /dev/uinput ---------
+// The key table above holds Windows scan codes (set 1); LxEvdevCode() turns each entry into the Linux key code, so
+// every binding works the same on both systems. Works on X11, Wayland and the console (needs the uinput permission,
+// see README / 99-espdevice.rules). With --dry-run the key events are printed to stdout instead (used for testing).
+
+static int  g_uinFd = -1;
+static bool g_dryRun = false;
+static bool g_inputOk = false;
+
+static int LxEvdevCode(const KeyDef& k) {
+    if (k.kind == 0) return k.code;   // scan code set 1 and Linux key codes are identical for 0x01..0x58
+    if (k.kind == 1) {                // extended (E0-prefixed) keys
+        switch (k.code) {
+        case 0x1C: return KEY_KPENTER;  case 0x1D: return KEY_RIGHTCTRL; case 0x35: return KEY_KPSLASH; case 0x37: return KEY_SYSRQ;
+        case 0x38: return KEY_RIGHTALT; case 0x47: return KEY_HOME;      case 0x48: return KEY_UP;      case 0x49: return KEY_PAGEUP;
+        case 0x4B: return KEY_LEFT;     case 0x4D: return KEY_RIGHT;     case 0x4F: return KEY_END;     case 0x50: return KEY_DOWN;
+        case 0x51: return KEY_PAGEDOWN; case 0x52: return KEY_INSERT;    case 0x53: return KEY_DELETE;
+        case 0x5B: return KEY_LEFTMETA; case 0x5C: return KEY_RIGHTMETA; case 0x5D: return KEY_COMPOSE;
+        }
+        return 0;
+    }
+    switch (k.code) {                 // "virtual key" entries
+    case VK_PAUSE: return KEY_PAUSE;
+    case VK_F13: return KEY_F13; case VK_F14: return KEY_F14; case VK_F15: return KEY_F15; case VK_F16: return KEY_F16;
+    case VK_F17: return KEY_F17; case VK_F18: return KEY_F18; case VK_F19: return KEY_F19; case VK_F20: return KEY_F20;
+    case VK_F21: return KEY_F21; case VK_F22: return KEY_F22; case VK_F23: return KEY_F23; case VK_F24: return KEY_F24;
+    case VK_MEDIA_PLAY_PAUSE: return KEY_PLAYPAUSE; case VK_MEDIA_NEXT_TRACK: return KEY_NEXTSONG;
+    case VK_MEDIA_PREV_TRACK: return KEY_PREVIOUSSONG; case VK_MEDIA_STOP: return KEY_STOPCD;
+    case VK_VOLUME_UP: return KEY_VOLUMEUP; case VK_VOLUME_DOWN: return KEY_VOLUMEDOWN; case VK_VOLUME_MUTE: return KEY_MUTE;
+    case VK_BROWSER_BACK: return KEY_BACK; case VK_BROWSER_FORWARD: return KEY_FORWARD;
+    case VK_BROWSER_REFRESH: return KEY_REFRESH; case VK_BROWSER_HOME: return KEY_HOMEPAGE;
+    case VK_LAUNCH_MAIL: return KEY_MAIL; case VK_LAUNCH_APP2: return KEY_CALC;
+    }
+    return 0;
+}
+
+// Opens the virtual keyboard. Returns false (and says why in the log) when /dev/uinput cannot be used.
+static bool LxInputInit(std::string& why) {
+    if (g_dryRun) { g_inputOk = true; return true; }
+    int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) fd = open("/dev/input/uinput", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) { why = std::string("cannot open /dev/uinput: ") + std::strerror(errno); return false; }
+    bool ok = ioctl(fd, UI_SET_EVBIT, EV_KEY) == 0 && ioctl(fd, UI_SET_EVBIT, EV_SYN) == 0;
+    for (int c = 1; ok && c < 256; c++) ok = ioctl(fd, UI_SET_KEYBIT, c) == 0;
+    struct uinput_setup us;
+    std::memset(&us, 0, sizeof(us));
+    us.id.bustype = BUS_USB; us.id.vendor = 0x1209; us.id.product = 0x4553; us.id.version = 1;
+    std::snprintf(us.name, UINPUT_MAX_NAME_SIZE, "ESPdevice keypad");
+    ok = ok && ioctl(fd, UI_DEV_SETUP, &us) == 0 && ioctl(fd, UI_DEV_CREATE) == 0;
+    if (!ok) { why = std::string("uinput setup failed: ") + std::strerror(errno); close(fd); return false; }
+    g_uinFd = fd;
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));   // let the desktop notice the new keyboard before the first key
+    g_inputOk = true;
+    return true;
+}
+
+static void LxWriteEvents(const int* codes, const int* values, int n) {
+    if (!g_inputOk || n <= 0) return;
+    if (g_dryRun) {
+        for (int i = 0; i < n; i++) std::printf("KEY %d %s\n", codes[i], values[i] == 1 ? "down" : values[i] == 0 ? "up" : "repeat");
+        std::fflush(stdout);
+        return;
+    }
+    struct input_event ev[2 * MAX_COMBO + 2];
+    std::memset(ev, 0, sizeof(ev));
+    int m = 0;
+    for (int i = 0; i < n && m < 2 * MAX_COMBO; i++) { ev[m].type = EV_KEY; ev[m].code = (unsigned short)codes[i]; ev[m].value = values[i]; m++; }
+    ev[m].type = EV_SYN; ev[m].code = SYN_REPORT; ev[m].value = 0; m++;
+    ssize_t w = write(g_uinFd, ev, sizeof(struct input_event) * m);   // one write: a combo goes out atomically
+    (void)w;
+}
+
+// Press: all keys down in order. Release: all keys up in reverse order.
+static void SendCombo(const CompiledBinding& b, bool down) {
+    if (b.count <= 0) return;
+    int codes[MAX_COMBO], values[MAX_COMBO], n = 0;
+    if (down) { for (int i = 0; i < b.count; i++) { int c = LxEvdevCode(b.keys[i]); if (c) { codes[n] = c; values[n++] = 1; } } }
+    else      { for (int i = b.count - 1; i >= 0; i--) { int c = LxEvdevCode(b.keys[i]); if (c) { codes[n] = c; values[n++] = 0; } } }
+    LxWriteEvents(codes, values, n);
+}
+
+// Typematic repeat sends a "repeat" event (value 2) for the LAST key only, like a real keyboard.
+static void SendRepeat(const CompiledBinding& b) {
+    if (b.count <= 0) return;
+    int c = LxEvdevCode(b.keys[b.count - 1]);
+    if (!c) return;
+    int values[1] = { 2 };
+    LxWriteEvents(&c, values, 1);
+}
+#endif
 
 // ---- Profiles ---------------------------------------------------------
 
@@ -451,7 +620,12 @@ static void WriteFileAtomic(const fs::path& target, const std::string& content) 
         if (!f.is_open()) return;
         f << content;
     }
+#ifdef _WIN32
     MoveFileExW(tmp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+#else
+    std::error_code ec;
+    fs::rename(tmp, target, ec);   // atomic on POSIX
+#endif
 }
 
 // Caller must hold g_profileMutex.
@@ -831,11 +1005,14 @@ static double g_initialDelay = 0.25;
 static double g_repeatInterval = 0.033;
 
 static void InitTypematicTiming() {
+#ifdef _WIN32
     int delayIndex = 1, speedIndex = 31;
     SystemParametersInfoA(SPI_GETKEYBOARDDELAY, 0, &delayIndex, 0);
     SystemParametersInfoA(SPI_GETKEYBOARDSPEED, 0, &speedIndex, 0);
     g_initialDelay = 0.25 * (delayIndex + 1);
     g_repeatInterval = 1.0 / (2.5 + (speedIndex / 31.0) * 27.5);
+#endif
+    // Linux: keeps the defaults above (0.25 s delay, 30 repeats per second); the desktop has no single place to ask.
 }
 
 // ---- Device thread state (touched ONLY by the device thread) ----------
@@ -952,6 +1129,7 @@ static void ServiceTick(double now) {
     }
 }
 
+#ifdef _WIN32
 // ---- Serial port ------------------------------------------------------
 
 static HANDLE OpenPortRaw(const std::wstring& portName) {
@@ -1096,6 +1274,163 @@ static void DeviceThread() {
     }
     ReleaseAllKeys();
 }
+#else
+// ---- Serial port (Linux: termios) -------------------------------------
+// The board shows up as /dev/ttyUSB* (CP210x / CH340) or /dev/ttyACM*. The user needs access to it (udev rule or the
+// "dialout" group, see README). --device /dev/ttyXYZ (or $ESPDEVICE_DEVICE) skips the scan.
+
+static std::string g_deviceOverride;
+
+static int OpenPortRaw(const std::string& path) {
+    int fd = open(path.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return -1;
+    struct termios tio;
+    if (tcgetattr(fd, &tio) != 0) { close(fd); return -1; }
+    cfmakeraw(&tio);
+    cfsetispeed(&tio, B921600);
+    cfsetospeed(&tio, B921600);
+    tio.c_cflag |= CLOCAL | CREAD;
+    tio.c_cflag &= ~(PARENB | CSTOPB | CSIZE | CRTSCTS);
+    tio.c_cflag |= CS8;
+    tio.c_cc[VMIN] = 0; tio.c_cc[VTIME] = 0;
+    if (tcsetattr(fd, TCSANOW, &tio) != 0) { close(fd); return -1; }
+    ioctl(fd, TIOCEXCL);   // nobody else may open the keypad while we have it (like the Windows build)
+    return fd;
+}
+
+static std::vector<std::string> ListComPorts() {
+    std::vector<std::string> result;
+    if (!g_deviceOverride.empty()) { result.push_back(g_deviceOverride); return result; }
+    const char* patterns[] = { "/dev/ttyACM*", "/dev/ttyUSB*" };
+    for (const char* pat : patterns) {
+        glob_t g; std::memset(&g, 0, sizeof(g));
+        if (glob(pat, 0, nullptr, &g) == 0) for (size_t k = 0; k < g.gl_pathc; k++) result.push_back(g.gl_pathv[k]);
+        globfree(&g);
+    }
+    return result;
+}
+
+// Waits up to timeoutMs for bytes. >0 = bytes read, 0 = nothing yet, -1 = the port is gone.
+static int ReadPort(int fd, uint8_t* buf, size_t cap, int timeoutMs) {
+    struct pollfd p; p.fd = fd; p.events = POLLIN; p.revents = 0;
+    int r = poll(&p, 1, timeoutMs);
+    if (r < 0) return errno == EINTR ? 0 : -1;
+    if (r == 0) return 0;
+    if (p.revents & POLLIN) {
+        ssize_t n = read(fd, buf, cap);
+        if (n > 0) return (int)n;
+        if (n < 0 && (errno == EAGAIN || errno == EINTR)) return 0;
+        return -1;
+    }
+    if (p.revents & (POLLERR | POLLHUP | POLLNVAL)) return -1;
+    return 0;
+}
+
+static bool ProbeHandle(int fd) {
+    // Opening a USB serial port usually resets an ESP32 board, so it may still be booting: ask up to 3 times.
+    for (int attempt = 0; attempt < 3 && g_running; attempt++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(attempt == 0 ? 120 : 300));   // let the board settle after open
+        tcflush(fd, TCIOFLUSH);
+        uint8_t query = ID_QUERY_BYTE;
+        if (write(fd, &query, 1) != 1) { if (errno != EAGAIN) return false; continue; }
+
+        std::string reply;
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+        while (std::chrono::steady_clock::now() < deadline) {
+            uint8_t buf[32];
+            int n = ReadPort(fd, buf, sizeof(buf), 50);
+            if (n < 0) return false;
+            if (n > 0) {
+                reply.append((const char*)buf, (size_t)n);
+                if ((reply.find(DEVICE_ID) != std::string::npos || reply.find(DEVICE_ID8) != std::string::npos) && reply.find('\n') != std::string::npos) return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Finds the board and returns the OPEN port (no close/reopen, so the board is never reset twice).
+static bool FindDevice(int& outFd, std::string& outName) {
+    for (const auto& name : ListComPorts()) {
+        if (!g_running) return false;
+        int fd = OpenPortRaw(name);
+        if (fd < 0) continue;
+        if (ProbeHandle(fd)) {
+            tcflush(fd, TCIFLUSH);
+            outFd = fd; outName = name;
+            return true;
+        }
+        close(fd);
+    }
+    return false;
+}
+
+static void SleepWhileRunning(int ms) {
+    for (int waited = 0; waited < ms && g_running; waited += 50)
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+}
+
+// The hot loop: poll() wakes the instant a byte arrives (or after READ_WAKE_MS for the repeat / timeout checks).
+static void RunSession(int fd, const std::string& path) {
+    uint8_t buf[64];
+    uint32_t reportCount = 0;
+    double lastRateT = QpcToSec(QpcNow());
+    double lastLinkCheck = lastRateT;
+
+    while (g_running) {
+        int n = ReadPort(fd, buf, sizeof(buf), (int)READ_WAKE_MS);
+        int64_t tRecv = QpcNow(); // timestamp the instant the read returns
+        double now = QpcToSec(tRecv);
+
+        if (n < 0) { Log("Serial read failed (device unplugged?)."); return; }
+
+        if (n > 0) {
+            reportCount += (uint32_t)n;
+            for (int i = 0; i < n; i++) HandleByte(buf[i], now, tRecv);
+        }
+
+        ServiceTick(now);
+
+        if (now - lastRateT >= 1.0) {
+            g_reportsPerSec = reportCount;
+            reportCount = 0;
+            lastRateT = now;
+        }
+        if (now - lastLinkCheck >= 0.5) { // the keypad is silent when idle, so verify the link actively
+            lastLinkCheck = now;
+            struct stat st;
+            if (stat(path.c_str(), &st) != 0) { Log("Serial link lost."); return; }
+        }
+    }
+}
+
+static void DeviceThread() {
+    struct sched_param sp; sp.sched_priority = 10;   // real-time priority when the system allows it (rtprio limit); harmless if not
+    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != 0) setpriority(PRIO_PROCESS, 0, -5);
+
+    while (g_running) {
+        int fd = -1;
+        std::string name;
+        if (!FindDevice(fd, name)) { SleepWhileRunning(1000); continue; }
+
+        { std::lock_guard<std::mutex> lk(g_portMx); g_portNameNarrow = name; }
+        g_connected = true;
+        Log("Connected: 3-Key on " + name);
+        PushEvent(EVT_CONNECT, -1, 0, name.c_str());
+
+        RunSession(fd, name);
+
+        ReleaseAllKeys();
+        close(fd);
+        g_connected = false;
+        g_reportsPerSec = 0;
+        { std::lock_guard<std::mutex> lk(g_portMx); g_portNameNarrow.clear(); }
+        Log("Disconnected.");
+        PushEvent(EVT_DISCONNECT, -1, 0, "device disconnected");
+    }
+    ReleaseAllKeys();
+}
+#endif
 
 // ---- State JSON -------------------------------------------------------
 
@@ -1157,10 +1492,25 @@ static std::string HttpResponse(const std::string& status, const std::string& co
     return out.str();
 }
 
+// Socket timeouts: Windows takes milliseconds in a DWORD, Linux a timeval.
+static void SetSockTimeoutMs(SOCKET s, int option, int ms) {
+#ifdef _WIN32
+    DWORD v = (DWORD)ms;
+    setsockopt(s, SOL_SOCKET, option, (const char*)&v, sizeof(v));
+#else
+    struct timeval tv; tv.tv_sec = ms / 1000; tv.tv_usec = (ms % 1000) * 1000;
+    setsockopt(s, SOL_SOCKET, option, (const char*)&tv, sizeof(tv));
+#endif
+}
+
 static bool SendAll(SOCKET s, const std::string& data) {
     size_t sent = 0;
     while (sent < data.size()) {
+#ifdef _WIN32
         int n = send(s, data.c_str() + sent, (int)(data.size() - sent), 0);
+#else
+        int n = (int)send(s, data.c_str() + sent, data.size() - sent, MSG_NOSIGNAL);
+#endif
         if (n <= 0) return false;
         sent += (size_t)n;
     }
@@ -1243,8 +1593,7 @@ static void HandleSse(SOCKET client) {
 
     BOOL nodelay = TRUE;
     setsockopt(client, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof(nodelay));
-    DWORD sndTimeout = 3000;
-    setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, (const char*)&sndTimeout, sizeof(sndTimeout));
+    SetSockTimeoutMs(client, SO_SNDTIMEO, 3000);
 
     bool alive = SendAll(client,
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: keep-alive\r\n\r\n");
@@ -1286,8 +1635,7 @@ static bool HostAllowed(const std::string& hostLower) {
 }
 
 static void HandleRequest(SOCKET client) {
-    DWORD rcvTimeout = 3000;
-    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, (const char*)&rcvTimeout, sizeof(rcvTimeout));
+    SetSockTimeoutMs(client, SO_RCVTIMEO, 3000);
 
     std::string request = ReadHttpRequest(client);
     if (request.empty()) { closesocket(client); return; }
@@ -1554,12 +1902,17 @@ static void HandleRequest(SOCKET client) {
 }
 
 static void AcceptLoop() {
+#ifdef _WIN32
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) { Log("WSAStartup failed - web UI unavailable."); return; }
+#endif
 
     SOCKET listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listener == INVALID_SOCKET) { Log("Failed to create listening socket."); return; }
 
+#ifndef _WIN32
+    { int yes = 1; setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes)); }   // restart right after a quit
+#endif
     sockaddr_in addr = {};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // loopback only: never reachable from the network
@@ -1583,9 +1936,12 @@ static void AcceptLoop() {
         }).detach();
     }
     closesocket(listener);
+#ifdef _WIN32
     WSACleanup();
+#endif
 }
 
+#ifdef _WIN32
 // ---- Tray icon --------------------------------------------------------
 
 static HWND g_trayWindow = nullptr;
@@ -1685,7 +2041,46 @@ static void QuitApp() {
     RemoveTrayIcon();
     ExitProcess(0);
 }
+#else
+// ---- Linux: no tray icon ----------------------------------------------------
+// The app runs in the background; the web page (http://localhost:9191) is the control panel (SETTINGS has pause / resume /
+// terminate). Starting it again opens the page. SIGINT / SIGTERM quit cleanly.
 
+static std::atomic<bool> g_sigQuit{ false };
+static int g_lockFd = -1;
+static bool g_noBrowser = false;
+static bool g_background = false;
+
+static void OpenSettingsInBrowser() {
+    if (!std::getenv("DISPLAY") && !std::getenv("WAYLAND_DISPLAY")) return;   // no desktop session: nothing to open
+    std::string url = "http://localhost:" + std::to_string(HTTP_PORT) + "/";
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    char* argv[] = { (char*)"xdg-open", (char*)url.c_str(), nullptr };
+    pid_t pid;
+    if (posix_spawnp(&pid, "xdg-open", &fa, nullptr, argv, environ) != 0) Log("Could not run xdg-open - open " + url + " yourself.");
+    posix_spawn_file_actions_destroy(&fa);
+}
+
+// Single clean exit path (web UI + signals): the device thread releases any held key (it sees g_running go false
+// within one wake), then we exit.
+static void QuitApp() {
+    g_running = false;
+    g_evCv.notify_all();
+    SaveCounters(false);
+    FoldDay(); SaveStats(false);
+    for (int i = 0; i < 40 && g_anySent.load(); i++) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (g_uinFd >= 0) { ioctl(g_uinFd, UI_DEV_DESTROY); close(g_uinFd); g_uinFd = -1; }
+    _exit(0);
+}
+
+static void OnSignal(int) { g_sigQuit = true; }
+#endif
+
+#ifdef _WIN32
 // ---- Entry point ------------------------------------------------------
 
 // Windows 11 may coarsen timers / throttle background processes with no
@@ -1763,6 +2158,102 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     timeEndPeriod(1);
     return 0;
 }
+#else
+static void PrintUsage() {
+    std::printf("ESPdevice v%s - osu! keypad driver\n"
+                "  ESPdevice [--background] [--no-browser] [--device /dev/ttyUSB0] [--dry-run] [--version]\n"
+                "  --background   started by autostart / systemd: do not open the browser\n"
+                "  --no-browser   never open the browser\n"
+                "  --device PATH  use this serial device instead of scanning /dev/ttyACM* and /dev/ttyUSB*\n"
+                "  --dry-run      print the keys instead of typing them (for testing)\n"
+                "Settings page: http://localhost:%d   Config: ~/.config/espdevice\n", ESP_VERSION, HTTP_PORT);
+}
+
+int main(int argc, char** argv) {
+    if (const char* d = std::getenv("ESPDEVICE_DEVICE")) g_deviceOverride = d;
+    if (const char* d = std::getenv("ESPDEVICE_DRYRUN")) g_dryRun = (*d && *d != '0');
+    for (int i = 1; i < argc; i++) {
+        std::string a = argv[i];
+        if (a == "--background") g_background = true;
+        else if (a == "--no-browser") g_noBrowser = true;
+        else if (a == "--dry-run") g_dryRun = true;
+        else if (a == "--device" && i + 1 < argc) g_deviceOverride = argv[++i];
+        else if (a == "--version") { std::printf("ESPdevice v%s\n", ESP_VERSION); return 0; }
+        else if (a == "--help" || a == "-h") { PrintUsage(); return 0; }
+        else { std::fprintf(stderr, "unknown option: %s\n", a.c_str()); PrintUsage(); return 2; }
+    }
+
+    signal(SIGPIPE, SIG_IGN);
+    signal(SIGCHLD, SIG_IGN);
+    struct sigaction sa; std::memset(&sa, 0, sizeof(sa)); sa.sa_handler = OnSignal; sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, nullptr); sigaction(SIGTERM, &sa, nullptr); sigaction(SIGHUP, &sa, nullptr);
+
+    InitPaths();
+
+    // Only one copy may run: two would both type every keystroke.
+    g_lockFd = open((g_configDir / "espdevice.lock").c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (g_lockFd >= 0 && flock(g_lockFd, LOCK_EX | LOCK_NB) != 0) {
+        if (!g_background && !g_noBrowser) OpenSettingsInBrowser();
+        else std::fprintf(stderr, "ESPdevice is already running (http://localhost:%d)\n", HTTP_PORT);
+        return 0;
+    }
+
+    LoadCounters();
+    LoadStats();
+    LoadKeyMode();
+    struct sigaction cs; std::memset(&cs, 0, sizeof(cs)); cs.sa_handler = CrashSignal; sigemptyset(&cs.sa_mask);
+    sigaction(SIGSEGV, &cs, nullptr); sigaction(SIGBUS, &cs, nullptr); sigaction(SIGFPE, &cs, nullptr); sigaction(SIGABRT, &cs, nullptr);
+    InitClock();
+    for (int i = 0; i < NUM_KEYS; i++) { g_held[i] = g_sent[i] = false; g_nextRepeat[i] = -1; g_lastSeen[i] = 0; g_heldView[i] = false; }
+
+    try {
+        std::lock_guard<std::mutex> lock(g_profileMutex);
+        LoadProfilesLocked();
+        PublishBindingsLocked();
+        g_profilesLoaded = true;
+    } catch (...) {
+        Log("ERROR: profiles unreadable - using default profile.");
+        std::lock_guard<std::mutex> lock(g_profileMutex);
+        g_profiles.clear();
+        g_profiles.push_back(DefaultProfile("Profile 1"));
+        g_activeIndex = 0;
+        PublishBindingsLocked();
+    }
+
+    {
+        std::error_code ec;
+        g_hasLogo = fs::exists(g_configDir / L"logo.png", ec);
+        if (g_hasLogo) g_logoVer = 1;
+    }
+
+    Log(std::string(VERSION_TEXT) + " starting (Linux).");
+    InitTypematicTiming();
+
+    std::string why;
+    if (LxInputInit(why)) {
+        Log(g_dryRun ? "Key output: dry-run (printed to stdout, nothing is typed)." : "Key output: /dev/uinput virtual keyboard ready.");
+        if (g_dryRun) PushEvent(EVT_INFO, -1, 0, "dry-run: keys are printed, not typed");
+    } else {
+        Log("ERROR: " + why + " - keys will NOT be typed. See README (Linux permissions).");
+        PushEvent(EVT_INFO, -1, 0, "no uinput access: keys NOT typed");   // short: the event text is limited; the full reason is in the log
+    }
+
+    std::thread([]() { RunGuarded("device", true, DeviceThread); }).detach();
+    std::thread([]() { RunGuarded("http-accept", true, AcceptLoop); }).detach();
+    std::thread([]() { RunGuarded("counters", true, CounterSaverLoop); }).detach();
+
+    if (!g_background && !g_noBrowser) {
+        std::thread([]() { std::this_thread::sleep_for(std::chrono::milliseconds(800)); OpenSettingsInBrowser(); }).detach();
+    }
+    std::printf("ESPdevice v%s running - settings page: http://localhost:%d  (Ctrl+C to quit)\n", ESP_VERSION, HTTP_PORT);
+    std::fflush(stdout);
+
+    while (g_running && !g_sigQuit.load()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    Log("Quit requested (signal or web UI).");
+    QuitApp();
+    return 0;
+}
+#endif
 
 // ---- Embedded website -------------------------------------------------
 // Split into several literals (MSVC caps a single string literal at ~16 KB).

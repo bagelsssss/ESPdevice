@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.0_linux
+- **Linux port (x86_64)**: the same app and settings page as 1.2.0 on Linux, released as `ESPdevice-linux-x86_64.tar.gz`. Serial port through `/dev/ttyUSB*` / `/dev/ttyACM*` (921600 baud, retries while the board reboots after opening), keys typed through a `/dev/uinput` virtual keyboard (X11, Wayland, console), config in `~/.config/espdevice/` with the same files as Windows, single-instance lock, clean quit on Ctrl+C / SIGTERM.
+- No tray icon on Linux: pause / resume / terminate are in SETTINGS, starting the app again opens the page. Options: `--background`, `--no-browser`, `--device PATH`, `--dry-run`.
+- `install.sh` / `uninstall.sh`, a udev rule (permission for `/dev/uinput` and the serial port, ModemManager kept away), an app menu entry, optional autostart or systemd user service.
+- New workflow `.github/workflows/linux.yml`: builds the binary, runs `linux/selftest.py` against a simulated keypad, packages and attaches the tar.gz to releases of tags ending in `_linux`. The Windows workflows are unchanged.
+- The Windows build is unchanged (the Linux code is behind `#ifdef`); the only shared change is that the two socket-timeout calls now go through one helper with identical behaviour on Windows.
+
 ## 1.2.0
 - **Icons**: PROFILE, VISUALIZER and KEYBINDS have built-in 16x16 pixel icons inside the exe (title bar and icon window), centred, in the theme's text colour. Loading icon files from `config\icons\` was removed (the top-right buttons and social links are text); the icon system will be revamped in the next update. `ICONS.md` is gone.
 - **Advanced theming** (SETTINGS > THEMING, off by default): in THEMES, edit individual elements (text, backgrounds, window lines, buttons, inputs, fonts, sizes) of any custom theme, with PICK AN ELEMENT to click the thing you want. Edits are per theme, saved in the new `config\theme_advanced.json` (older builds ignore it); switching it off shows the plain theme and keeps the edits. Built-in themes need COPY first.
