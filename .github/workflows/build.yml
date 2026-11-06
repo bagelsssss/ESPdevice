@@ -103,7 +103,7 @@ jobs:
         run: |
           d=ESPdevice-linux-x86_64
           mkdir -p "$d"
-          cp espdevice linux/install.sh linux/uninstall.sh linux/99-espdevice.rules linux/espdevice.desktop linux/espdevice.service linux/espdevice.png LICENSE "$d/"
+          cp espdevice linux/install.sh linux/uninstall.sh linux/70-espdevice.rules linux/espdevice.desktop linux/espdevice.service linux/espdevice.png LICENSE "$d/"
           cp linux/README.md "$d/README.md"
           chmod +x "$d/espdevice" "$d/install.sh" "$d/uninstall.sh"
           tar czf ESPdevice-linux-x86_64.tar.gz "$d"
