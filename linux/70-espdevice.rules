@@ -1,0 +1,17 @@
+# ESPdevice (Linux). Installed to /etc/udev/rules.d/ by install.sh.
+#
+# NOTE: this file must sort BEFORE 73-seat-late.rules (the 'uaccess' permission) and before ModemManager's
+# 77/80-mm-*.rules (ID_MM_DEVICE_IGNORE). Named 99-... both settings were silently ignored: the serial port stayed
+# root:dialout and ModemManager probed the keypad, so ESPdevice never found it. Hence the 70- prefix.
+#
+# 1) The virtual keyboard: lets the logged-in desktop user open /dev/uinput (no root, no "input" group needed).
+KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uaccess"
+
+# 2) The keypad's USB-to-serial chip: the logged-in user may open it, and ModemManager must not probe it
+#    (it would send AT commands to your keypad). Common ESP32 dev-board chips:
+#    CP210x (10c4:ea60), CH340 (1a86:7523), CH9102 (1a86:55d4), FTDI (0403:6001), ESP32-S2/S3/C3 native USB (303a:*).
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"

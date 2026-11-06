@@ -11,7 +11,7 @@ rm -f "$HOME/.local/bin/espdevice" "$HOME/.local/share/applications/espdevice.de
       "$HOME/.config/autostart/espdevice.desktop" "$HOME/.config/systemd/user/espdevice.service"
 [ "$PURGE" = 1 ] && rm -rf "$HOME/.config/espdevice" && echo "removed ~/.config/espdevice"
 if [ "$SYSTEM" = 1 ]; then
-  sudo rm -f /etc/udev/rules.d/99-espdevice.rules /etc/modules-load.d/espdevice.conf
+  sudo rm -f /etc/udev/rules.d/70-espdevice.rules /etc/udev/rules.d/99-espdevice.rules /etc/modules-load.d/espdevice.conf
   sudo udevadm control --reload-rules
 fi
 echo "ESPdevice removed."

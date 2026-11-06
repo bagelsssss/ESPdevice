@@ -1,1 +1,1 @@
-#define ESP_VERSION "1.1.0"
+#define ESP_VERSION "1.2.0_linux"

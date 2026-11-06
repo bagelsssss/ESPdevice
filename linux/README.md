@@ -19,7 +19,7 @@ cd ESPdevice-linux-x86_64
 `install.sh` runs as your normal user. It copies the program to `~/.local/bin/espdevice`, adds an ESPdevice entry to your
 app menu, and (with `sudo`) installs two small permission files:
 
-- `/etc/udev/rules.d/99-espdevice.rules` lets the logged-in desktop user open `/dev/uinput` and the keypad's serial port, and
+- `/etc/udev/rules.d/70-espdevice.rules` lets the logged-in desktop user open `/dev/uinput` and the keypad's serial port, and
   keeps ModemManager from probing the keypad.
 - `/etc/modules-load.d/espdevice.conf` loads the `uinput` kernel module at boot.
 
@@ -49,7 +49,7 @@ espdevice [--background] [--no-browser] [--device /dev/ttyUSB0] [--dry-run] [--v
 
 ## Flashing the ESP32 from Linux
 
-Use the Arduino IDE as in the main README. To upload you need access to the serial port: either the `99-espdevice.rules` file above
+Use the Arduino IDE as in the main README. To upload you need access to the serial port: either the `70-espdevice.rules` file above
 (works while you are logged in at the desktop) or `sudo usermod -aG dialout $USER` and log in again. Close the Arduino serial monitor
 before starting ESPdevice: only one program can have the port.
 
@@ -58,7 +58,8 @@ before starting ESPdevice: only one program can have the port.
 - **"keys NOT typed" / "cannot open /dev/uinput"** (in the DEBUGGER log and `~/.config/espdevice/espdevice.log`): the permission files are missing
   or not active yet. Run `./install.sh` again, then log out and in. Check with `ls -l /dev/uinput` (needs `modprobe uinput` once if the file is missing).
   Without the udev rule you can also run `sudo setfacl -m u:$USER:rw /dev/uinput` for the current boot.
-- **The keypad is not found** (status stays "not connected"): check that `ls /dev/ttyUSB* /dev/ttyACM*` shows the board and that you can open it
+- **The keypad is not found** (status stays "not connected"): `~/.config/espdevice/espdevice.log` now says why for every port
+  (`permission denied`, `busy` = ModemManager/serial monitor has it, `no reply to the identity query`). Then check that `ls /dev/ttyUSB* /dev/ttyACM*` shows the board and that you can open it
   (`dialout` group or the udev rule). If a CH340 board disappears right after plugging in, the `brltty` package is claiming it: remove `brltty`.
   If the board answers slowly, ESPdevice tries three times; `--device` skips the scan.
 - **Keys are typed twice**: two copies are running (for example the autostart entry and a manual start). ESPdevice prevents that, but an old `espdevice`

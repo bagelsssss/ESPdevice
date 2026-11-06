@@ -1281,11 +1281,11 @@ static void DeviceThread() {
 
 static std::string g_deviceOverride;
 
-static int OpenPortRaw(const std::string& path) {
+static int OpenPortRaw(const std::string& path, int* errOut = nullptr) {
     int fd = open(path.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
-    if (fd < 0) return -1;
+    if (fd < 0) { if (errOut) *errOut = errno; return -1; }
     struct termios tio;
-    if (tcgetattr(fd, &tio) != 0) { close(fd); return -1; }
+    if (tcgetattr(fd, &tio) != 0) { if (errOut) *errOut = errno; close(fd); return -1; }
     cfmakeraw(&tio);
     cfsetispeed(&tio, B921600);
     cfsetospeed(&tio, B921600);
@@ -1293,9 +1293,26 @@ static int OpenPortRaw(const std::string& path) {
     tio.c_cflag &= ~(PARENB | CSTOPB | CSIZE | CRTSCTS);
     tio.c_cflag |= CS8;
     tio.c_cc[VMIN] = 0; tio.c_cc[VTIME] = 0;
-    if (tcsetattr(fd, TCSANOW, &tio) != 0) { close(fd); return -1; }
+    if (tcsetattr(fd, TCSANOW, &tio) != 0) { if (errOut) *errOut = errno; close(fd); return -1; }
     ioctl(fd, TIOCEXCL);   // nobody else may open the keypad while we have it (like the Windows build)
     return fd;
+}
+
+// Says WHY a port was not usable, once per change (the scan runs every second; the log must not fill up).
+static void LogPortProblem(const std::string& path, const std::string& message) {
+    static std::mutex mx; static std::map<std::string, std::string> last;
+    std::lock_guard<std::mutex> lk(mx);
+    std::string& prev = last[path];
+    if (prev == message) return;
+    prev = message;
+    if (!message.empty()) Log(message);
+}
+
+static std::string HexPreview(const std::string& bytes) {
+    static const char* d = "0123456789ABCDEF";
+    std::string out;
+    for (size_t i = 0; i < bytes.size() && i < 16; i++) { out += d[(uint8_t)bytes[i] >> 4]; out += d[bytes[i] & 15]; out += ' '; }
+    return out;
 }
 
 static std::vector<std::string> ListComPorts() {
@@ -1306,6 +1323,15 @@ static std::vector<std::string> ListComPorts() {
         glob_t g; std::memset(&g, 0, sizeof(g));
         if (glob(pat, 0, nullptr, &g) == 0) for (size_t k = 0; k < g.gl_pathc; k++) result.push_back(g.gl_pathv[k]);
         globfree(&g);
+    }
+    static std::string lastList = "?";
+    std::string list;
+    for (const auto& r : result) list += (list.empty() ? "" : ", ") + r;
+    if (list != lastList) {
+        lastList = list;
+        if (list.empty()) Log("Serial scan: no /dev/ttyUSB* or /dev/ttyACM* port exists. Is the keypad plugged in (data cable, not charge-only)? "
+                              "If it appears in `lsusb` but not here, a service such as brltty may have taken it (check `dmesg | tail`).");
+        else Log("Serial scan: found " + list);
     }
     return result;
 }
@@ -1326,16 +1352,18 @@ static int ReadPort(int fd, uint8_t* buf, size_t cap, int timeoutMs) {
     return 0;
 }
 
-static bool ProbeHandle(int fd) {
-    // Opening a USB serial port usually resets an ESP32 board, so it may still be booting: ask up to 3 times.
-    for (int attempt = 0; attempt < 3 && g_running; attempt++) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(attempt == 0 ? 120 : 300));   // let the board settle after open
-        tcflush(fd, TCIOFLUSH);
+static bool ProbeHandle(int fd, std::string* seenOut = nullptr) {
+    // Opening a USB serial port usually resets an ESP32 board (DTR/RTS pulse), so it may still be booting (about 0.5-1.5 s
+    // including the bootloader): ask up to 6 times over roughly 4 seconds.
+    std::string everSeen;
+    for (int attempt = 0; attempt < 6 && g_running; attempt++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(attempt == 0 ? 200 : 350));   // let the board settle after open
+        tcflush(fd, TCIFLUSH);
         uint8_t query = ID_QUERY_BYTE;
         if (write(fd, &query, 1) != 1) { if (errno != EAGAIN) return false; continue; }
 
         std::string reply;
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(350);
         while (std::chrono::steady_clock::now() < deadline) {
             uint8_t buf[32];
             int n = ReadPort(fd, buf, sizeof(buf), 50);
@@ -1345,7 +1373,9 @@ static bool ProbeHandle(int fd) {
                 if ((reply.find(DEVICE_ID) != std::string::npos || reply.find(DEVICE_ID8) != std::string::npos) && reply.find('\n') != std::string::npos) return true;
             }
         }
+        if (everSeen.size() < 16) everSeen += reply;
     }
+    if (seenOut) *seenOut = everSeen;
     return false;
 }
 
@@ -1353,14 +1383,34 @@ static bool ProbeHandle(int fd) {
 static bool FindDevice(int& outFd, std::string& outName) {
     for (const auto& name : ListComPorts()) {
         if (!g_running) return false;
-        int fd = OpenPortRaw(name);
-        if (fd < 0) continue;
-        if (ProbeHandle(fd)) {
+        int err = 0;
+        int fd = OpenPortRaw(name, &err);
+        if (fd < 0) {
+            std::string why = std::strerror(err);
+            std::string hint;
+            if (err == EACCES || err == EPERM)
+                hint = " -> no permission. Re-run ./install.sh (installs the udev rule and adds you to the serial group), then log out and in; "
+                       "or run: sudo usermod -aG dialout $USER (the group may be 'uucp' on Arch/Fedora-like systems).";
+            else if (err == EBUSY)
+                hint = " -> another program has the port open: ModemManager, brltty or a serial monitor (Arduino IDE). "
+                       "Close it, or: sudo systemctl stop ModemManager (the udev rule from install.sh normally keeps it away).";
+            else if (err == ENOENT || err == ENODEV)
+                hint = " -> the port vanished while opening (replug the keypad).";
+            LogPortProblem(name, "Cannot open " + name + ": " + why + hint);
+            continue;
+        }
+        std::string seen;
+        if (ProbeHandle(fd, &seen)) {
             tcflush(fd, TCIFLUSH);
+            LogPortProblem(name, "");
             outFd = fd; outName = name;
             return true;
         }
         close(fd);
+        if (g_running)
+            LogPortProblem(name, "Opened " + name + " but it did not answer the ESPdevice identity query (expected \"8KEY\" or \"3KEY\")" +
+                           (seen.empty() ? ": no data at all. Wrong firmware, wrong board, or the board is held in reset/bootloader."
+                                         : ", it sent: " + HexPreview(seen) + "(garbage here usually means a different baud rate / different firmware)."));
     }
     return false;
 }
