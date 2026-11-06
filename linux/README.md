@@ -19,7 +19,7 @@ cd ESPdevice-linux-x86_64
 `install.sh` runs as your normal user. It copies the program to `~/.local/bin/espdevice`, adds an ESPdevice entry to your
 app menu, and (with `sudo`) installs two small permission files:
 
-- `/etc/udev/rules.d/70-espdevice.rules` lets the logged-in desktop user open `/dev/uinput` and the keypad's serial port, and
+- `/etc/udev/rules.d/70-espdevice.rules` lets you open `/dev/uinput` (desktop session permission plus a `uinput` group that install.sh creates and adds you to) and the keypad's serial port, and
   keeps ModemManager from probing the keypad.
 - `/etc/modules-load.d/espdevice.conf` loads the `uinput` kernel module at boot.
 
@@ -57,6 +57,8 @@ before starting ESPdevice: only one program can have the port.
 
 - **"keys NOT typed" / "cannot open /dev/uinput"** (in the DEBUGGER log and `~/.config/espdevice/espdevice.log`): the permission files are missing
   or not active yet. Run `./install.sh` again, then log out and in. Check with `ls -l /dev/uinput` (needs `modprobe uinput` once if the file is missing).
+  ESPdevice retries every 3 seconds, so fixing the permission is enough, no restart. The log also prints `Virtual keyboard created: /sys/devices/virtual/input/inputN`
+  when it works; `sudo evtest` (pick "ESPdevice keypad") shows whether the keys reach the system.
   Without the udev rule you can also run `sudo setfacl -m u:$USER:rw /dev/uinput` for the current boot.
 - **The keypad is not found** (status stays "not connected"): `~/.config/espdevice/espdevice.log` now says why for every port
   (`permission denied`, `busy` = ModemManager/serial monitor has it, `no reply to the identity query`). Then check that `ls /dev/ttyUSB* /dev/ttyACM*` shows the board and that you can open it

@@ -4,8 +4,10 @@
 # 77/80-mm-*.rules (ID_MM_DEVICE_IGNORE). Named 99-... both settings were silently ignored: the serial port stayed
 # root:dialout and ModemManager probed the keypad, so ESPdevice never found it. Hence the 70- prefix.
 #
-# 1) The virtual keyboard: lets the logged-in desktop user open /dev/uinput (no root, no "input" group needed).
-KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uaccess"
+# 1) The virtual keyboard: lets the logged-in desktop user open /dev/uinput (no "input" group needed). Two ways, both on:
+#    - uaccess: the user at the active desktop session gets access (same rule Steam uses),
+#    - group "uinput" (install.sh creates it and adds you): works from any login, e.g. SSH, autostart before the session is "active".
+KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uaccess", GROUP="uinput", MODE="0660"
 
 # 2) The keypad's USB-to-serial chip: the logged-in user may open it, and ModemManager must not probe it
 #    (it would send AT commands to your keypad). Common ESP32 dev-board chips:

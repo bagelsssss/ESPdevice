@@ -425,7 +425,7 @@ static void SendRepeat(const CompiledBinding& b) {
 
 static int  g_uinFd = -1;
 static bool g_dryRun = false;
-static bool g_inputOk = false;
+static std::atomic<bool> g_inputOk{false};
 
 static int LxEvdevCode(const KeyDef& k) {
     if (k.kind == 0) return k.code;   // scan code set 1 and Linux key codes are identical for 0x01..0x58
@@ -459,7 +459,15 @@ static bool LxInputInit(std::string& why) {
     if (g_dryRun) { g_inputOk = true; return true; }
     int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) fd = open("/dev/input/uinput", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
-    if (fd < 0) { why = std::string("cannot open /dev/uinput: ") + std::strerror(errno); return false; }
+    if (fd < 0) {
+        int e = errno;
+        why = std::string("cannot open /dev/uinput: ") + std::strerror(e);
+        if (e == EACCES || e == EPERM)
+            why += " (no permission. Re-run ./install.sh and log out and in; right now you can use: sudo setfacl -m u:$USER:rw /dev/uinput)";
+        else if (e == ENOENT)
+            why += " (the uinput kernel module is not loaded: sudo modprobe uinput)";
+        return false;
+    }
     bool ok = ioctl(fd, UI_SET_EVBIT, EV_KEY) == 0 && ioctl(fd, UI_SET_EVBIT, EV_SYN) == 0;
     for (int c = 1; ok && c < 256; c++) ok = ioctl(fd, UI_SET_KEYBIT, c) == 0;
     struct uinput_setup us;
@@ -469,6 +477,10 @@ static bool LxInputInit(std::string& why) {
     ok = ok && ioctl(fd, UI_DEV_SETUP, &us) == 0 && ioctl(fd, UI_DEV_CREATE) == 0;
     if (!ok) { why = std::string("uinput setup failed: ") + std::strerror(errno); close(fd); return false; }
     g_uinFd = fd;
+    {   // tell the user where the virtual keyboard lives, so `sudo evtest` / `libinput debug-events` can be pointed at it
+        char sysname[64] = {0};
+        if (ioctl(fd, UI_GET_SYSNAME(sizeof(sysname)), sysname) >= 0) Log(std::string("Virtual keyboard created: /sys/devices/virtual/input/") + sysname);
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(250));   // let the desktop notice the new keyboard before the first key
     g_inputOk = true;
     return true;
@@ -487,7 +499,10 @@ static void LxWriteEvents(const int* codes, const int* values, int n) {
     for (int i = 0; i < n && m < 2 * MAX_COMBO; i++) { ev[m].type = EV_KEY; ev[m].code = (unsigned short)codes[i]; ev[m].value = values[i]; m++; }
     ev[m].type = EV_SYN; ev[m].code = SYN_REPORT; ev[m].value = 0; m++;
     ssize_t w = write(g_uinFd, ev, sizeof(struct input_event) * m);   // one write: a combo goes out atomically
-    (void)w;
+    if (w != (ssize_t)(sizeof(struct input_event) * m)) {
+        static std::atomic<bool> warned{false};
+        if (!warned.exchange(true)) Log(std::string("ERROR: writing to the virtual keyboard failed: ") + (w < 0 ? std::strerror(errno) : "short write") + " (further failures are not logged)");
+    }
 }
 
 // Press: all keys down in order. Release: all keys up in reverse order.
@@ -2286,6 +2301,20 @@ int main(int argc, char** argv) {
     } else {
         Log("ERROR: " + why + " - keys will NOT be typed. See README (Linux permissions).");
         PushEvent(EVT_INFO, -1, 0, "no uinput access: keys NOT typed");   // short: the event text is limited; the full reason is in the log
+        // Keep trying: once the permission is fixed (install.sh, setfacl, modprobe) typing starts without restarting the app.
+        std::thread([]() {
+            std::string last = "";
+            while (g_running && !g_inputOk) {
+                for (int i = 0; i < 60 && g_running; i++) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                std::string w;
+                if (LxInputInit(w)) {
+                    Log("Key output: /dev/uinput virtual keyboard ready (after retry).");
+                    PushEvent(EVT_INFO, -1, 0, "uinput ready: keys are typed now");
+                    break;
+                }
+                if (w != last) { last = w; Log("ERROR: " + w + " - still retrying every 3 s."); }
+            }
+        }).detach();
     }
 
     std::thread([]() { RunGuarded("device", true, DeviceThread); }).detach();

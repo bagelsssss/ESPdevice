@@ -40,19 +40,22 @@ if [ "$SYSTEM" = 1 ]; then
   SUDO=sudo; command -v sudo >/dev/null 2>&1 || SUDO=
   if [ -z "$SUDO" ]; then echo "sudo is not available. As root, run:"; fi
   run() { if [ -n "$SUDO" ]; then $SUDO "$@"; else echo "  $*"; fi; }
+  getent group uinput >/dev/null 2>&1 || run groupadd -r uinput
   run rm -f /etc/udev/rules.d/99-espdevice.rules   # old name (sorted too late to take effect)
   run install -m 644 70-espdevice.rules /etc/udev/rules.d/70-espdevice.rules
   if [ -n "$SUDO" ]; then echo uinput | $SUDO tee /etc/modules-load.d/espdevice.conf >/dev/null; else echo "  echo uinput > /etc/modules-load.d/espdevice.conf"; fi
   run modprobe uinput || true
   run udevadm control --reload-rules
   run udevadm trigger --subsystem-match=misc --subsystem-match=tty
+  # The rule gives /dev/uinput to the group "uinput" (created above, or udev would ignore the line).
+  id -nG "$USER" | tr ' ' '\n' | grep -qx uinput || { run usermod -aG uinput "$USER" && echo "added $USER to the 'uinput' group (applies after you log out and in)."; }
   # Fallback that does not depend on the desktop session: the serial group (takes effect after the next login).
   SERIALGRP=""
   for g in dialout uucp; do getent group "$g" >/dev/null 2>&1 && SERIALGRP="$g" && break; done
   if [ -n "$SERIALGRP" ] && ! id -nG "$USER" | tr ' ' '\n' | grep -qx "$SERIALGRP"; then
     run usermod -aG "$SERIALGRP" "$USER" && echo "added $USER to the '$SERIALGRP' group (serial port access; applies after you log out and in)."
   fi
-  echo "done. If ESPdevice still says it cannot open /dev/uinput, log out and back in once."
+  echo "done. Log out and back in once (new groups), then check: ls -l /dev/uinput  (should show group uinput, mode crw-rw----+)."
 fi
 
 if [ "$AUTOSTART" = 1 ]; then
