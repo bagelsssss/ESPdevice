@@ -272,12 +272,11 @@ app/default_logo.h                 Built-in logo, embedded as bytes
 app/version.h                      The version number shown on the page (the release build writes it from the git tag)
 app/espdevice.rc, espdevice.ico    Tray/exe icon
 installer/ESPdevice.iss            Inno Setup script for ESPdevice-Setup.exe
-.github/workflows/build.yml        Builds the exe, installer and portable zip; attaches them to releases
-.github/workflows/linux.yml        Builds the Linux tar.gz, runs its self-test, attaches it to releases of tags ending in _linux
+.github/workflows/build.yml        Builds the Windows exe, installer and portable zip AND the Linux tar.gz (self-tested); attaches them to releases
 linux/                             Linux install / uninstall scripts, udev rule, menu entry, systemd unit, self-test, guide
 ```
 
-To publish a new Windows version: push a tag like `v1.1.1`. To publish the Linux version: push a tag ending in `_linux`, for example `1.2.0_linux`. GitHub Actions writes the version number into `app/version.h`, builds everything and attaches it to a Release.
+To publish a new Windows version: push a tag like `v1.1.1`. To publish the Linux version: push a tag ending in `_linux`, for example `1.2.0_linux`. Every build (push, pull request or tag) makes both the Windows and the Linux files as downloadable artifacts. GitHub Actions writes the version number into `app/version.h`, builds everything and attaches it to a Release.
 
 ## License
 

@@ -34,7 +34,12 @@ def get(path, **kw):
     with urllib.request.urlopen(req, timeout=5) as r: return r.status, r.read().decode()
 
 env = dict(os.environ, ESPDEVICE_CONFIG=cfg)
-proc = subprocess.Popen([binary, "--background", "--dry-run", "--device", link], stdout=open(outp, "w"), stderr=subprocess.STDOUT, env=env)
+# a fake xdg-open that records being called, to prove a plain start never opens a browser
+bindir = os.path.join(tmp, "bin"); os.makedirs(bindir); marker = os.path.join(tmp, "browser-opened")
+with open(os.path.join(bindir, "xdg-open"), "w") as f: f.write('#!/bin/sh\necho "$1" >> "%s"\n' % marker)
+os.chmod(os.path.join(bindir, "xdg-open"), 0o755)
+env.update(PATH=bindir + os.pathsep + env.get("PATH", ""), DISPLAY=":0")
+proc = subprocess.Popen([binary, "--dry-run", "--device", link], stdout=open(outp, "w"), stderr=subprocess.STDOUT, env=env)
 try:
     st = None
     for _ in range(60):
@@ -46,6 +51,10 @@ try:
     check(st is not None and st["connected"], "app started and found the simulated keypad")
     check("linux" in (st or {}).get("version", ""), "version says linux: %s" % (st or {}).get("version"))
     check("<html" in get("/")[1].lower(), "settings page is served")
+    time.sleep(1.5)
+    check(not os.path.exists(marker), "a plain start (autostart) does not open a browser")
+    subprocess.run([binary, "--open", "--dry-run"], env=env, timeout=10); time.sleep(0.5)
+    check(os.path.exists(marker) and "localhost:9191" in open(marker).read(), "--open on a running app opens the settings page")
     press(1, 80); time.sleep(0.2); press(2, 80); time.sleep(0.2); press(3, 300); time.sleep(0.4)
     out = open(outp).read().split("\n")
     keys = [l for l in out if l.startswith("KEY ")]

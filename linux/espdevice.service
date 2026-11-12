@@ -5,7 +5,7 @@ After=graphical-session.target
 PartOf=graphical-session.target
 
 [Service]
-ExecStart=@BIN@ --background
+ExecStart=@BIN@
 Restart=on-failure
 RestartSec=3
 

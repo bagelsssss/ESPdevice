@@ -2,9 +2,10 @@
 
 ## 1.2.0_linux
 - **Linux port (x86_64)**: the same app and settings page as 1.2.0 on Linux, released as `ESPdevice-linux-x86_64.tar.gz`. Serial port through `/dev/ttyUSB*` / `/dev/ttyACM*` (921600 baud, retries while the board reboots after opening), keys typed through a `/dev/uinput` virtual keyboard (X11, Wayland, console), config in `~/.config/espdevice/` with the same files as Windows, single-instance lock, clean quit on Ctrl+C / SIGTERM.
-- No tray icon on Linux: pause / resume / terminate are in SETTINGS, starting the app again opens the page. Options: `--background`, `--no-browser`, `--device PATH`, `--dry-run`.
+- No tray icon on Linux: pause / resume / terminate are in SETTINGS, the app never opens a browser by itself (so autostart is quiet); `--open` (used by the menu entry) opens the settings page. Other options: `--device PATH`, `--dry-run`; `--background` and `--no-browser` are still accepted.
 - `install.sh` / `uninstall.sh`, a udev rule (permission for `/dev/uinput` and the serial port, ModemManager kept away), an app menu entry, optional autostart or systemd user service.
-- New workflow `.github/workflows/linux.yml`: builds the binary, runs `linux/selftest.py` against a simulated keypad, packages and attaches the tar.gz to releases of tags ending in `_linux`. The Windows workflows are unchanged.
+- `.github/workflows/build.yml` now builds both: a `windows` job and a `linux` job (builds the binary, runs `linux/selftest.py` against a simulated keypad, packages the tar.gz); a `release` job attaches the files to releases (Windows files for `v*` tags, the Linux file for `*_linux` tags).
+- Linux fixes after first real-hardware tests: the udev rule is `70-espdevice.rules` (the old 99- name was ignored by udev), `/dev/uinput` access via a `uinput` group as well as uaccess, the app retries `/dev/uinput` every 3 s, and the log says exactly why a serial port or `/dev/uinput` could not be used.
 - The Windows build is unchanged (the Linux code is behind `#ifdef`); the only shared change is that the two socket-timeout calls now go through one helper with identical behaviour on Windows.
 
 ## 1.2.0

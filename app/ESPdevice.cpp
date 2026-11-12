@@ -2109,12 +2109,13 @@ static void QuitApp() {
 #else
 // ---- Linux: no tray icon ----------------------------------------------------
 // The app runs in the background; the web page (http://localhost:9191) is the control panel (SETTINGS has pause / resume /
-// terminate). Starting it again opens the page. SIGINT / SIGTERM quit cleanly.
+// terminate). It never opens a browser by itself (so autostart stays quiet); --open (used by the menu entry) opens the page,
+// or opens it if the app is already running. SIGINT / SIGTERM quit cleanly.
 
 static std::atomic<bool> g_sigQuit{ false };
 static int g_lockFd = -1;
-static bool g_noBrowser = false;
-static bool g_background = false;
+static bool g_open = false;        // --open: open the settings page in the browser
+static bool g_noBrowser = false;   // --background / --no-browser: kept for old autostart entries; they force "do not open"
 
 static void OpenSettingsInBrowser() {
     if (!std::getenv("DISPLAY") && !std::getenv("WAYLAND_DISPLAY")) return;   // no desktop session: nothing to open
@@ -2226,9 +2227,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
 #else
 static void PrintUsage() {
     std::printf("ESPdevice v%s - osu! keypad driver\n"
-                "  ESPdevice [--background] [--no-browser] [--device /dev/ttyUSB0] [--dry-run] [--version]\n"
-                "  --background   started by autostart / systemd: do not open the browser\n"
-                "  --no-browser   never open the browser\n"
+                "  ESPdevice [--open] [--device /dev/ttyUSB0] [--dry-run] [--version]\n"
+                "  (no option)    run in the background and never open a browser, so autostart stays quiet\n"
+                "  --open         also open the settings page in the browser (or just open it if already running)\n"
+                "  --background, --no-browser   still accepted, they only mean \"do not open\"\n"
                 "  --device PATH  use this serial device instead of scanning /dev/ttyACM* and /dev/ttyUSB*\n"
                 "  --dry-run      print the keys instead of typing them (for testing)\n"
                 "Settings page: http://localhost:%d   Config: ~/.config/espdevice\n", ESP_VERSION, HTTP_PORT);
@@ -2239,8 +2241,8 @@ int main(int argc, char** argv) {
     if (const char* d = std::getenv("ESPDEVICE_DRYRUN")) g_dryRun = (*d && *d != '0');
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
-        if (a == "--background") g_background = true;
-        else if (a == "--no-browser") g_noBrowser = true;
+        if (a == "--open") g_open = true;
+        else if (a == "--background" || a == "--no-browser") g_noBrowser = true;
         else if (a == "--dry-run") g_dryRun = true;
         else if (a == "--device" && i + 1 < argc) g_deviceOverride = argv[++i];
         else if (a == "--version") { std::printf("ESPdevice v%s\n", ESP_VERSION); return 0; }
@@ -2258,7 +2260,7 @@ int main(int argc, char** argv) {
     // Only one copy may run: two would both type every keystroke.
     g_lockFd = open((g_configDir / "espdevice.lock").c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
     if (g_lockFd >= 0 && flock(g_lockFd, LOCK_EX | LOCK_NB) != 0) {
-        if (!g_background && !g_noBrowser) OpenSettingsInBrowser();
+        if (g_open && !g_noBrowser) OpenSettingsInBrowser();
         else std::fprintf(stderr, "ESPdevice is already running (http://localhost:%d)\n", HTTP_PORT);
         return 0;
     }
@@ -2321,7 +2323,7 @@ int main(int argc, char** argv) {
     std::thread([]() { RunGuarded("http-accept", true, AcceptLoop); }).detach();
     std::thread([]() { RunGuarded("counters", true, CounterSaverLoop); }).detach();
 
-    if (!g_background && !g_noBrowser) {
+    if (g_open && !g_noBrowser) {
         std::thread([]() { std::this_thread::sleep_for(std::chrono::milliseconds(800)); OpenSettingsInBrowser(); }).detach();
     }
     std::printf("ESPdevice v%s running - settings page: http://localhost:%d  (Ctrl+C to quit)\n", ESP_VERSION, HTTP_PORT);

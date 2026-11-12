@@ -23,25 +23,26 @@ app menu, and (with `sudo`) installs two small permission files:
   keeps ModemManager from probing the keypad.
 - `/etc/modules-load.d/espdevice.conf` loads the `uinput` kernel module at boot.
 
-Then **unplug and replug the keypad** (or log out and in once) and start ESPdevice from the menu or with `espdevice`.
-It opens the settings page in your browser. Other options: `./install.sh --systemd` (user service instead of the autostart entry),
+Then **unplug and replug the keypad** (or log out and in once) and start ESPdevice from the menu, which opens the settings page in your browser.
+Running plain `espdevice` (or autostart) starts it without opening anything; go to http://localhost:9191 when you want the page. Other options: `./install.sh --systemd` (user service instead of the autostart entry),
 `./install.sh --no-system` (skip the permission files). Remove everything with `./uninstall.sh` (`--purge` also deletes your settings).
 
 ## Running it
 
 ```
-espdevice [--background] [--no-browser] [--device /dev/ttyUSB0] [--dry-run] [--version]
+espdevice [--open] [--device /dev/ttyUSB0] [--dry-run] [--version]
 ```
 
 | Option | Meaning |
 |--------|---------|
-| `--background` | Used by autostart / systemd: do not open the browser. |
-| `--no-browser` | Never open the browser. |
+| *(no option)* | Runs in the background and **never opens a browser**, so autostart and systemd stay quiet. It prints the settings URL. |
+| `--open` | Also opens the settings page in your browser, or just opens it if ESPdevice is already running. The app menu entry uses this. |
+| `--background`, `--no-browser` | Still accepted (older autostart entries use them); they just mean "do not open". |
 | `--device PATH` | Use this serial device instead of scanning `/dev/ttyACM*` and `/dev/ttyUSB*`. |
 | `--dry-run` | Print the keys (`KEY 30 down`...) instead of typing them. Good for checking a setup. |
 
 - There is **no tray icon** on Linux (tray support differs between desktops). The app runs in the background; pause, resume and
-  terminate are in **SETTINGS** on the page. Starting `espdevice` again just opens the page. `Ctrl+C` or `SIGTERM` quits cleanly.
+  terminate are in **SETTINGS** on the page. Starting `espdevice --open` (the menu entry) opens the page. `Ctrl+C` or `SIGTERM` quits cleanly.
 - **Your files** are in `~/.config/espdevice/` (or `$XDG_CONFIG_HOME/espdevice`): `profiles.json`, `settings.json`, `layout.json`, `theme.json`,
   `theme_advanced.json`, `counters.json`, `clickstats.json` and `espdevice.log`. They are the same files and formats as the Windows `config\` folder,
   so you can copy them between the two.

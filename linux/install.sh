@@ -30,7 +30,7 @@ mkdir -p "$HOME/.local/bin" "$(dirname "$ICON")" "$APPS"
 
 install -m 755 espdevice "$BIN"
 install -m 644 espdevice.png "$ICON"
-sed -e "s|@BIN@|$BIN|g" -e "s|@ICON@|$ICON|g" espdevice.desktop > "$APPS/espdevice.desktop"
+sed -e "s|@BIN@|$BIN --open|g" -e "s|@ICON@|$ICON|g" espdevice.desktop > "$APPS/espdevice.desktop"
 echo "installed: $BIN"
 echo "installed: $APPS/espdevice.desktop (menu entry)"
 
@@ -60,7 +60,7 @@ fi
 
 if [ "$AUTOSTART" = 1 ]; then
   mkdir -p "$HOME/.config/autostart"
-  sed -e "s|@BIN@|$BIN --background|g" -e "s|@ICON@|$ICON|g" espdevice.desktop > "$HOME/.config/autostart/espdevice.desktop"
+  sed -e "s|@BIN@|$BIN|g" -e "s|@ICON@|$ICON|g" espdevice.desktop > "$HOME/.config/autostart/espdevice.desktop"   # no --open: autostart never opens a browser
   echo "autostart: $HOME/.config/autostart/espdevice.desktop"
 fi
 if [ "$SYSTEMD" = 1 ]; then
