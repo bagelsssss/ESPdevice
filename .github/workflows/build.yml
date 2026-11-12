@@ -50,9 +50,7 @@ jobs:
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; }
           if (-not (Test-Path $iscc)) { throw "ISCC.exe not found" }
           $v = "${{ steps.ver.outputs.version }}"
-          # keep the installer's version in step with the tag, if the script defines one
-          (Get-Content installer/ESPdevice.iss) -replace '^(#define\s+MyAppVersion\s+).*$', "`$1`"$v`"" | Set-Content installer/ESPdevice.iss
-          & $iscc installer/ESPdevice.iss
+          & $iscc "/DMyAppVersion=$v" installer/ESPdevice.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
 
       - name: Package
